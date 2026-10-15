@@ -5,7 +5,7 @@ const Patient = require('../models/patient.model');
 const AppError = require('../utils/AppError');
 const { anchoredPrefix, escapeRegExp } = require('../utils/regex');
 const { isPastDate, isPastSlot, nowInClinicTz } = require('../utils/time');
-const { emitAppointmentChange } = require('../sockets/realtime');
+const { emitAppointmentEvent } = require('../sockets/appointmentEvents');
 const { logAction } = require('./auditService');
 const doctorService = require('./doctorService');
 const patientService = require('./patientService');
@@ -82,7 +82,7 @@ async function createAppointment(payload, user, ip) {
       ip,
     });
 
-    emitAppointmentChange('created', appointment);
+    emitAppointmentEvent('created', appointment);
 
     return appointment;
   } catch (err) {
@@ -164,7 +164,7 @@ async function updateAppointment(appointmentId, payload, user, ip) {
       ip,
     });
 
-    emitAppointmentChange('updated', appointment);
+    emitAppointmentEvent('updated', appointment);
   }
 
   return appointment;
@@ -198,7 +198,7 @@ async function cancelAppointment(appointmentId, reason, user, ip) {
     ip,
   });
 
-  emitAppointmentChange('cancelled', appointment);
+  emitAppointmentEvent('cancelled', appointment);
 
   return appointment;
 }
@@ -226,7 +226,8 @@ async function markArrived(appointmentId, user, ip) {
     ip,
   });
 
-  emitAppointmentChange('arrived', appointment);
+  // an arrival is an update to the same row, so the board refetches rather than learning a new event
+  emitAppointmentEvent('updated', appointment);
 
   return appointment;
 }
@@ -250,7 +251,7 @@ async function completeAppointment(appointmentId, user, ip) {
     ip,
   });
 
-  emitAppointmentChange('completed', appointment);
+  emitAppointmentEvent('updated', appointment);
 
   return appointment;
 }
