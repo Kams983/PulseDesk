@@ -1,13 +1,25 @@
-const { APPOINTMENT_STATUS } = require('../config/constants');
+const { APPOINTMENT_SORT_FIELDS, APPOINTMENT_STATUS, ROLES } = require('../config/constants');
 const Appointment = require('../models/appointment.model');
 const Doctor = require('../models/doctor.model');
 const Patient = require('../models/patient.model');
 const AppError = require('../utils/AppError');
+const { anchoredPrefix, escapeRegExp } = require('../utils/regex');
 const { isPastDate, isPastSlot } = require('../utils/time');
 const { emitAppointmentChange } = require('../sockets/realtime');
 const { logAction } = require('./auditService');
+const doctorService = require('./doctorService');
 const patientService = require('./patientService');
 const { getSlotsForDoctorDate } = require('./slotService');
+
+// the list page renders exactly these fields, so a query never drags whole documents around
+const APPOINTMENT_FIELDS =
+  'patientId doctorId departmentId date startTime endTime status purpose notes patientSnapshot doctorSnapshot createdBy arrivedAt completedAt cancelledAt cancelReason createdAt';
+
+// client input never reaches the sort directly: only the whitelisted fields are accepted, so a sort
+// can never become an injection point or an unindexed scan of a field nobody sorts by
+const SORT_FIELDS = APPOINTMENT_SORT_FIELDS;
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 50;
 
 async function createAppointment(payload, user, ip) {
   const doctor = await Doctor.findById(payload.doctorId).lean();
@@ -91,6 +103,123 @@ async function createAppointment(payload, user, ip) {
   }
 }
 
+async function listAppointments(query, user) {
+  const filter = await buildListFilter(query, user);
+  const sort = buildSort(query.sortBy, query.sortOrder);
+  const page = query.page || 1;
+  const limit = query.limit || DEFAULT_LIMIT;
+
+  const [appointments, total] = await Promise.all([
+    Appointment.find(filter)
+      .select(APPOINTMENT_FIELDS)
+      .sort(sort)
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Appointment.countDocuments(filter),
+  ]);
+
+  return { appointments, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+}
+
+async function getAppointmentById(appointmentId, user) {
+  const appointment = await Appointment.findById(appointmentId).select(APPOINTMENT_FIELDS).lean();
+
+  if (!appointment) {
+    throw AppError.notFound('Appointment not found');
+  }
+
+  await assertCanSeeAppointment(appointment, user);
+
+  return appointment;
+}
+
+async function buildListFilter(query, user) {
+  const filter = {};
+
+  if (query.status) {
+    filter.status = query.status;
+  }
+
+  if (query.departmentId) {
+    filter.departmentId = query.departmentId;
+  }
+
+  if (query.dateFrom || query.dateTo) {
+    // dates are YYYY-MM-DD strings, so a string range is exactly a date range and needs no parsing
+    filter.date = {};
+
+    if (query.dateFrom) {
+      filter.date.$gte = query.dateFrom;
+    }
+
+    if (query.dateTo) {
+      filter.date.$lte = query.dateTo;
+    }
+  }
+
+  if (query.q) {
+    filter['patientSnapshot.nameLower'] = anchoredPrefix(query.q.toLowerCase());
+  }
+
+  if (query.mobile) {
+    filter['patientSnapshot.mobile'] = new RegExp(`^${escapeRegExp(query.mobile)}`);
+  }
+
+  if (query.doctor) {
+    filter['doctorSnapshot.nameLower'] = anchoredPrefix(query.doctor.toLowerCase());
+  }
+
+  // a doctor's own scope wins over whatever the client sent, so passing someone else's doctorId in the
+  // query cannot widen the list
+  if (user.role === ROLES.DOCTOR) {
+    const own = await doctorService.findOwnDoctorProfile(user.id);
+
+    if (!own) {
+      throw AppError.forbidden('No doctor profile is linked to this account');
+    }
+
+    filter.doctorId = own._id;
+  } else if (query.doctorId) {
+    filter.doctorId = query.doctorId;
+  }
+
+  return filter;
+}
+
+function buildSort(sortBy = SORT_FIELDS[0], sortOrder = 'asc') {
+  const direction = sortOrder === 'desc' ? -1 : 1;
+  const sort = { [sortBy]: direction };
+
+  // a date on its own does not order a busy day, so the start time is always the second key
+  if (sortBy === 'date') {
+    sort.startTime = direction;
+  }
+
+  // Many appointments share a date and a start time across doctors, and without a total order skip
+  // and limit can repeat one row on page two and drop another. The id makes every page deterministic.
+  sort._id = 1;
+
+  return sort;
+}
+
+async function assertCanSeeAppointment(appointment, user) {
+  await assertOwnsAppointment(appointment, user, 'view');
+}
+
+// the caller either is the doctor on the appointment or is not allowed near it
+async function assertOwnsAppointment(appointment, user, action) {
+  if (user.role !== ROLES.DOCTOR) {
+    return;
+  }
+
+  const own = await doctorService.findOwnDoctorProfile(user.id);
+
+  if (!own || own._id.toString() !== appointment.doctorId.toString()) {
+    throw AppError.forbidden(`You can only ${action} your own appointments`);
+  }
+}
+
 function assertSlotIsInTheFuture(date, startTime) {
   if (isPastDate(date)) {
     throw AppError.badRequest('That date is in the past', [
@@ -123,4 +252,11 @@ async function resolvePatient(payload, user) {
   return { patient, createdNewPatient: true };
 }
 
-module.exports = { createAppointment };
+module.exports = {
+  APPOINTMENT_FIELDS,
+  MAX_LIMIT,
+  SORT_FIELDS,
+  createAppointment,
+  getAppointmentById,
+  listAppointments,
+};

@@ -18,6 +18,9 @@ const ACTIVE_STATUSES = [
   APPOINTMENT_STATUS.COMPLETED,
 ];
 
+// the only fields an appointment list may be sorted by, so client input never reaches the sort itself
+const APPOINTMENT_SORT_FIELDS = ['date', 'startTime', 'createdAt', 'status'];
+
 // the only place that decides whether a status change is allowed, so no route can invent its own rules
 const ALLOWED_TRANSITIONS = {
   [APPOINTMENT_STATUS.SCHEDULED]: [APPOINTMENT_STATUS.ARRIVED, APPOINTMENT_STATUS.CANCELLED],
@@ -26,4 +29,4 @@ const ALLOWED_TRANSITIONS = {
   [APPOINTMENT_STATUS.CANCELLED]: [],
 };
 
-module.exports = { ROLES, APPOINTMENT_STATUS, ACTIVE_STATUSES, ALLOWED_TRANSITIONS };
+module.exports = { ROLES, APPOINTMENT_STATUS, ACTIVE_STATUSES, ALLOWED_TRANSITIONS, APPOINTMENT_SORT_FIELDS };

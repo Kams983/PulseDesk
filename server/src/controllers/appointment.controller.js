@@ -11,6 +11,18 @@ async function createAppointment(req, res) {
   });
 }
 
+async function listAppointments(req, res) {
+  const { appointments, meta } = await appointmentService.listAppointments(req.query, req.user);
+
+  return sendSuccess(res, { data: { appointments: appointments.map(toAppointmentDto) }, meta });
+}
+
+async function getAppointment(req, res) {
+  const appointment = await appointmentService.getAppointmentById(req.params.id, req.user);
+
+  return sendSuccess(res, { data: { appointment: toAppointmentDto(appointment) } });
+}
+
 // the list page renders from the snapshots, so a row here never needs a join to be displayed
 function toAppointmentDto(appointment) {
   return {
@@ -40,4 +52,4 @@ function toAppointmentDto(appointment) {
   };
 }
 
-module.exports = { createAppointment, toAppointmentDto };
+module.exports = { createAppointment, getAppointment, listAppointments, toAppointmentDto };

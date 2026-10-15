@@ -1,5 +1,6 @@
 const { z } = require('zod');
-const { calendarDate, objectId, timeSchema } = require('./common');
+const { APPOINTMENT_SORT_FIELDS, APPOINTMENT_STATUS } = require('../config/constants');
+const { calendarDate, emptyMeansAbsent, objectId, timeSchema } = require('./common');
 
 const MOBILE_PATTERN = /^\+?\d{7,15}$/;
 
@@ -31,4 +32,32 @@ const createAppointmentSchema = z
     }
   });
 
-module.exports = { createAppointmentSchema };
+const listAppointmentsQuerySchema = z
+  .object({
+    q: emptyMeansAbsent(z.string().trim().min(1).max(80).optional()),
+    mobile: emptyMeansAbsent(z.string().trim().min(1).max(20).optional()),
+    doctor: emptyMeansAbsent(z.string().trim().min(1).max(80).optional()),
+    doctorId: emptyMeansAbsent(objectId('Expected a doctor id').optional()),
+    departmentId: emptyMeansAbsent(objectId('Expected a department id').optional()),
+    status: emptyMeansAbsent(z.enum(Object.values(APPOINTMENT_STATUS), 'Unknown appointment status').optional()),
+    dateFrom: emptyMeansAbsent(calendarDate().optional()),
+    dateTo: emptyMeansAbsent(calendarDate().optional()),
+    sortBy: z.enum(APPOINTMENT_SORT_FIELDS, 'Unknown sort field').default(APPOINTMENT_SORT_FIELDS[0]),
+    sortOrder: z.enum(['asc', 'desc'], 'Sort order must be asc or desc').default('asc'),
+    page: z.coerce.number().int().min(1).default(1),
+    // a bigger page would only let one caller decide how much work the database does for everyone
+    limit: z.coerce.number().int().min(1).max(50, 'Limit cannot be more than 50').default(10),
+  })
+  .superRefine((query, ctx) => {
+    if (query.dateFrom && query.dateTo && query.dateFrom > query.dateTo) {
+      ctx.addIssue({ code: 'custom', message: 'dateFrom must not be after dateTo', path: ['dateFrom'] });
+    }
+  });
+
+const appointmentIdParamSchema = z.object({ id: objectId('Expected an appointment id') });
+
+module.exports = {
+  appointmentIdParamSchema,
+  createAppointmentSchema,
+  listAppointmentsQuerySchema,
+};
