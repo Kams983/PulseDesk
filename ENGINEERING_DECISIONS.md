@@ -18,4 +18,5 @@ Short notes per area. Newest line goes at the bottom of its section.
 
 - `tests/setup.js` starts an in-memory MongoDB for every test file and wipes collections between tests, so a uniqueness assertion cannot leak into the next test.
 - The global rate limiter is skipped when `NODE_ENV=test`, otherwise the suite would trip its own 429.
-- mongodb-memory-server fetches its mongod binary on the first test run rather than in a postinstall script, npm 11 blocks dependency install scripts by default, and the binary is then cached under `node_modules/.cache`.
+- mongodb-memory-server fetches its mongod binary on the first test run rather than in a postinstall script, npm 11 blocks dependency install scripts by default, and the binary is then cached under `node_modules/.cache`. The first run therefore spends a few minutes on a large download, later runs start in about two seconds.
+- The test connection passes `runtimeAdapters: { os }` because jest cannot run the driver's dynamic `import('os')`, and the driver hides that failure, sends empty client metadata, and then mongod 8.2 refuses the handshake with "missing required sub-document 'driver'". Production boots normally, so this stays in the test setup.
