@@ -86,6 +86,19 @@ Jest runs against an in-memory MongoDB, so no local database is needed and no re
 | POST | `/api/v1/auth/refresh` | refresh cookie | rotates the pair, the used token is deleted |
 | POST | `/api/v1/auth/logout` | refresh cookie | clears the cookie, always succeeds |
 | GET | `/api/v1/auth/me` | bearer token | the signed in user, safe fields only |
+| GET | `/api/v1/departments` | any role | the department list, used as a filter |
+| GET | `/api/v1/doctors?departmentId=&q=` | any role | a doctor sees only their own record |
+| GET | `/api/v1/doctors/:id` | any role | a doctor may only read their own id |
+| POST | `/api/v1/doctors` | super_admin | creates the login and the profile together |
+| PUT | `/api/v1/doctors/:id/schedule` | super_admin | replaces slot duration and the weekly schedule |
+| POST | `/api/v1/users/receptionists` | super_admin | creates a receptionist login |
+| GET | `/api/v1/slots?doctorId=&date=` | any role | a doctor only for their own id |
+
+## Slots
+
+Slots are never stored. `GET /api/v1/slots` takes a doctor and a calendar date, builds the grid from that weekday's sessions, trims the windows that fall inside a break, then marks each slot `booked` when an active appointment already holds it, `past` when the date or the time has gone, or `available`. A booked slot stays `booked` even after its time passes, so the day view still shows the appointment.
+
+The doctor's slot duration drives the step, which is why the seed gives the three doctors 15, 20 and 30 minutes: the same session shape produces grids of 28, 21 and 14 slots for tomorrow.
 
 ## API conventions
 

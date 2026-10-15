@@ -33,6 +33,7 @@ Content-Type: application/json
 }
 
 ### Sign in as receptionist
+# @name receptionLogin
 POST {{host}}/auth/login
 Content-Type: application/json
 
@@ -90,6 +91,104 @@ POST {{host}}/auth/logout
 
 ### RBAC was proven here with a temporary GET /admin-check route (doctor 403, admin 200), which has
 ### been removed again. The next phase adds real role guarded routes and the checks move to those.
+
+### Departments, any signed in role
+# curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:5000/api/v1/departments
+GET {{host}}/departments
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+
+### Doctors, with the optional filters
+# curl -H "Authorization: Bearer $ACCESS_TOKEN" "http://localhost:5000/api/v1/doctors?q=okafor"
+GET {{host}}/doctors?q=okafor
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+
+### One doctor
+GET {{host}}/doctors/PASTE_A_DOCTOR_ID
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+
+### A doctor reading another doctor, expect 403
+GET {{host}}/doctors/PASTE_ANOTHER_DOCTOR_ID
+Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
+
+### Create a doctor, super_admin only. 409 when the email already exists
+# curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d @doctor.json http://localhost:5000/api/v1/doctors
+POST {{host}}/doctors
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Dr. Halima Sani",
+  "email": "dr.sani@emr.test",
+  "password": "Password123!",
+  "departmentId": "PASTE_A_DEPARTMENT_ID",
+  "specialization": "Physician",
+  "slotDurationMinutes": 20,
+  "schedule": [
+    {
+      "dayOfWeek": 1,
+      "sessions": [
+        { "name": "Morning", "start": "09:00", "end": "12:00" },
+        { "name": "Evening", "start": "13:00", "end": "17:00" }
+      ],
+      "breaks": [{ "name": "Lunch", "start": "12:00", "end": "13:00" }]
+    }
+  ]
+}
+
+### Replace a schedule, super_admin only. Every rule failure comes back as a field in meta.details
+# curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d @schedule.json http://localhost:5000/api/v1/doctors/$DOCTOR_ID/schedule
+PUT {{host}}/doctors/PASTE_A_DOCTOR_ID/schedule
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "slotDurationMinutes": 15,
+  "schedule": [
+    {
+      "dayOfWeek": 2,
+      "sessions": [{ "start": "10:00", "end": "11:00" }],
+      "breaks": [{ "start": "10:30", "end": "10:45" }]
+    }
+  ]
+}
+
+### Availability for a doctor and a date
+# curl -H "Authorization: Bearer $ACCESS_TOKEN" "http://localhost:5000/api/v1/slots?doctorId=$DOCTOR_ID&date=2026-10-16"
+GET {{host}}/slots?doctorId=PASTE_A_DOCTOR_ID&date=2026-10-16
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+
+### A receptionist creating a doctor, expect 403
+POST {{host}}/doctors
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Dr. Nope",
+  "email": "dr.nope@emr.test",
+  "password": "Password123!",
+  "departmentId": "PASTE_A_DEPARTMENT_ID"
+}
+
+### Create a receptionist, super_admin only
+POST {{host}}/users/receptionists
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Ada Okeke",
+  "email": "ada@emr.test",
+  "password": "Password123!"
+}
+
+### An invalid schedule, expect 400 with schedule.0.sessions.0.start named
+PUT {{host}}/doctors/PASTE_A_DOCTOR_ID/schedule
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "slotDurationMinutes": 20,
+  "schedule": [{ "dayOfWeek": 1, "sessions": [{ "start": "9am", "end": "10:00" }] }]
+}
 
 ### The 404 shape for an unknown route
 GET {{host}}/nope

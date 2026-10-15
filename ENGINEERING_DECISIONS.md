@@ -40,13 +40,24 @@ Short notes per area, newest line at the bottom of each section. Ambiguities res
 
 ## Scheduling and slots
 
-- Slots are never stored. They are generated from the doctor's weekly sessions, trimmed by breaks, then marked booked by overlaying active appointments.
-- Time math runs in minutes since midnight with `utils/time.js`, which keeps slot stepping in integers instead of Date objects.
+- Slots are never stored. They are generated from the doctor's weekly sessions, trimmed by breaks, then marked booked by overlaying active appointments. A stored grid would have to be rewritten every time a schedule changed and could disagree with the schedule it came from.
+- `services/slotGenerator.js` is a pure function: no database, no `Date`, no clock reads. Every rule is a function of its arguments, so the unit tests need no fixtures and no in memory database, and the same maths can be reused anywhere without a connection.
+- Time math runs in minutes since midnight with `utils/time.js`, and `HH:mm` strings are only parsed at the edges. A session that is not a multiple of the slot duration leaves the leftover tail unused rather than overrunning the session, which is why 09:00 to 10:00 with 25 minute slots gives two slots ending at 09:50.
+- The grid is stepped from the start of each session, and a slot that would run into a break is dropped instead of shifting the rest of the grid. The generator sorts by start time and keeps one slot per start, so overlapping sessions can never produce overlapping or duplicated slots.
+- One query fetches the active appointments for the whole day and a `Set` of booked start times marks the grid up. A per slot query would be dozens of round trips for a list that is always small, and the active only filter matches the partial unique index that actually guards booking.
+- Booked outranks past. An appointment that already happened still has to appear on the day view, while only an unbooked slot in the past is useless to a receptionist.
+- Appointment dates and times stay plain `YYYY-MM-DD` and `HH:mm` strings, and the weekday is read from the date in utc, so no timezone conversion can ever shift a booking to the previous or next day.
+- Departure from the seeded doctors: the three of them share a session shape but get 15, 20 and 30 minute slots, so slot generation is visibly exercised with an even grid, an uneven one and a coarse one.
+- "A doctor only sees themselves" lives in one place, `doctorService.assertCanViewDoctor`, which both the doctor routes and the slots route call. A doctor gets 403 for another doctor's id, and an empty list from `/doctors` rather than someone else's row.
+- Creating a doctor writes a `User` and a `Doctor`, and a standalone mongod has no transactions, so a failed profile creation deletes the user again instead of leaving a login with no profile behind. A failed rollback is logged rather than swallowed by the rollback itself.
+- Schedule validation is all zod, so a rejected schedule comes back as `400` with `meta.details` naming the exact path, for example `schedule.0.sessions.1.start`. The refinement guards against empty and unparsable input because an inner rule failing still runs it.
+- Query filters treat an empty string as absent, because a filter widget sends its empty state as `?departmentId=&q=` rather than omitting the keys.
 
 ## Appointments and audit
 
 - The status workflow is defined once in `config/constants.js` and read from there, so no route can invent a transition. Invalid transitions are a 409, not a 400.
 - Every state change records who did it in `AuditLog`, with the actor, the entity and the request metadata.
+- The audit helper resolves the actor from an `id` or an `_id`, because `authenticate` attaches a plain object while a service logging its own work holds a document. Without that, a row written from a route stored a role and no user, which is exactly the kind of hole an audit trail cannot have.
 
 ## Realtime and frontend
 
