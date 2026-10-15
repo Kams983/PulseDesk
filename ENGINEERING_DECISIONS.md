@@ -29,8 +29,14 @@ Short notes per area, newest line at the bottom of each section. Ambiguities res
 
 ## Auth
 
-- Access token short lived in a cookie or a `Bearer` header, refresh token stored hashed with a TTL row, so rotation and logout are both a delete.
-- `authenticate` only decodes and attaches `req.user`; `authorize(...roles)` is a separate guard so each route states its own policy.
+- The refresh token is a random 64 byte hex string rather than a JWT. A JWT would have to be signed, unrevocable until it expires, and would need a second secret (`JWT_REFRESH_SECRET`, since removed) that buys nothing: the server has to store a row for it either way to support logout. A random value has no payload to forge and only one meaning, a row lookup.
+- Only the SHA-256 hash of that value is stored, so a database dump does not hand out live sessions. A fast hash is right here where bcrypt is right for passwords: the input is 512 bits of server generated entropy, so there is nothing to brute force, and bcrypt on every refresh would only add latency.
+- Refresh rotates: using a token deletes its row and issues a brand new pair. A stolen refresh token is therefore only good until the real client next refreshes, after which the thief holds a dead value and the client still works. Revocation, replay detection and logout then all become the same one line delete instead of a blocklist.
+- Access token lives in the response body and stays in the client's memory, refresh token lives in an `httpOnly`, `SameSite=Lax` cookie scoped to `path=/api/v1/auth` and is `Secure` only in production. Script on the page cannot read the cookie, the browser sends it solely to the auth routes, and a short access token lifetime bounds what a leaked body token is worth. The refresh token never appears in a JSON response.
+- `bcrypt` cost 10 through `authService.hashPassword`, which the seed script calls too, so no second place can disagree about the cost or the algorithm.
+- A failed sign in always answers the same generic `Invalid email or password`, whether the email is unknown, the account is inactive or the password is wrong, so the endpoint cannot be used to enumerate accounts. The audit row records the attempted email for the operator.
+- `authenticate` verifies the token and then re-reads the user, so a deactivated account loses access immediately instead of waiting out the token lifetime. `authorize(...roles)` is a separate guard, so each route states its own policy and a missing role is a 403 rather than a 401.
+- The 403 probe route used to prove the role guard was temporary and has been removed; the check now belongs to the first real role guarded route.
 
 ## Scheduling and slots
 

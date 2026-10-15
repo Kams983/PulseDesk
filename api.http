@@ -1,0 +1,95 @@
+# EMR api requests
+# Run the api with `npm run dev` inside server/ (on this machine: `env -u PORT npm run dev`, the shell exports PORT=0)
+# Seed the demo data first with `npm run seed`.
+# In VS Code press "Send Request" above a block. For a terminal, the curl equivalent is in the comment.
+
+@host = http://localhost:5000/api/v1
+# password for every demo account
+@password = Password123!
+
+### Health, should be 200
+# curl -i http://localhost:5000/api/v1/health
+GET {{host}}/health
+
+### Sign in as super_admin, stores the cookie set by the response
+# curl -i -c cookies.txt -H "Content-Type: application/json" -d '{"email":"admin@emr.test","password":"Password123!"}' http://localhost:5000/api/v1/auth/login
+# @name adminLogin
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@emr.test",
+  "password": "{{password}}"
+}
+
+### Sign in as doctor
+# @name doctorLogin
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "dr.okafor@emr.test",
+  "password": "{{password}}"
+}
+
+### Sign in as receptionist
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "reception@emr.test",
+  "password": "{{password}}"
+}
+
+### Wrong password, must be a generic 401 and write a LOGIN_FAILED audit row
+# curl -i -H "Content-Type: application/json" -d '{"email":"admin@emr.test","password":"WrongPassword1!"}' http://localhost:5000/api/v1/auth/login
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@emr.test",
+  "password": "WrongPassword1!"
+}
+
+### Unknown email, must be the same generic 401 as above
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "nobody@emr.test",
+  "password": "{{password}}"
+}
+
+### Fails validation, 400 with the field in the details
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "not-an-email",
+  "password": "short"
+}
+
+### Who am I, paste the accessToken from a login response
+# curl -i -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:5000/api/v1/auth/me
+GET {{host}}/auth/me
+Authorization: Bearer {{adminLogin.response.body.data.accessToken}}
+
+### No token, must be 401
+GET {{host}}/auth/me
+
+### Refresh, the browser sends the httpOnly cookie automatically
+# curl -i -b cookies.txt -c cookies.txt -X POST http://localhost:5000/api/v1/auth/refresh
+POST {{host}}/auth/refresh
+
+### Reusing an old refresh token after a refresh, must be 401
+POST {{host}}/auth/refresh
+
+### Sign out, must be 200 even when the cookie is already gone
+# curl -i -b cookies.txt -X POST http://localhost:5000/api/v1/auth/logout
+POST {{host}}/auth/logout
+
+### RBAC was proven here with a temporary GET /admin-check route (doctor 403, admin 200), which has
+### been removed again. The next phase adds real role guarded routes and the checks move to those.
+
+### The 404 shape for an unknown route
+GET {{host}}/nope

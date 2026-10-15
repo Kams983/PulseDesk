@@ -11,7 +11,7 @@ Appointment module for a clinic: users and roles, doctor schedules, slot generat
 
 ```
 server/
-  scripts/        seed.js, filled in with the demo data later
+  scripts/        seed.js, wipes and recreates the demo data
   src/
     config/       env.js, db.js, constants.js
     controllers/  one thin function per route
@@ -39,6 +39,23 @@ npm run dev
 
 The api listens on http://localhost:5000, health check at `/api/v1/health`. A missing or malformed variable, for example a short `JWT_ACCESS_SECRET`, makes the server exit immediately with the exact problem printed.
 
+Load the demo data (it wipes the collections it owns, so never point it at real data):
+
+```
+cd server
+npm run seed
+```
+
+| Role | Email | Password |
+| --- | --- | --- |
+| super_admin | admin@emr.test | Password123! |
+| receptionist | reception@emr.test | Password123! |
+| doctor | dr.okafor@emr.test | Password123! |
+| doctor | dr.bello@emr.test | Password123! |
+| doctor | dr.adeyemi@emr.test | Password123! |
+
+The three doctors get General Medicine with 15 minute slots, Pediatrics with 20 and Cardiology with 30, all on a Monday to Friday 09:00 to 12:00 and 13:00 to 17:00 schedule with a lunch break, so the slot logic has something uneven to work with. Seven appointments are placed on the next working day in every status, which gives the list page something to show.
+
 ```
 cd client
 npm install
@@ -55,6 +72,20 @@ npm test
 ```
 
 Jest runs against an in-memory MongoDB, so no local database is needed and no real data is touched. The first run downloads the mongod binary once and takes a few minutes, later runs are a few seconds.
+
+## Trying the api
+
+[api.http](api.http) at the repo root holds every request as a clickable block for the VS Code REST client, each with the equivalent curl command in a comment. It grows with each phase.
+
+## Endpoints so far
+
+| Method | Path | Access | Notes |
+| --- | --- | --- | --- |
+| GET | `/api/v1/health` | public | liveness plus database state |
+| POST | `/api/v1/auth/login` | public | strict rate limiter, returns the access token and sets the refresh cookie |
+| POST | `/api/v1/auth/refresh` | refresh cookie | rotates the pair, the used token is deleted |
+| POST | `/api/v1/auth/logout` | refresh cookie | clears the cookie, always succeeds |
+| GET | `/api/v1/auth/me` | bearer token | the signed in user, safe fields only |
 
 ## API conventions
 
