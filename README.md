@@ -93,6 +93,24 @@ Jest runs against an in-memory MongoDB, so no local database is needed and no re
 | PUT | `/api/v1/doctors/:id/schedule` | super_admin | replaces slot duration and the weekly schedule |
 | POST | `/api/v1/users/receptionists` | super_admin | creates a receptionist login |
 | GET | `/api/v1/slots?doctorId=&date=` | any role | a doctor only for their own id |
+| GET | `/api/v1/patients?q=` | receptionist, super_admin | one box for a code, a mobile number or a name |
+| GET | `/api/v1/patients/:id` | receptionist, super_admin, doctor | a doctor only for a patient they have seen |
+| POST | `/api/v1/appointments` | receptionist, super_admin | books a slot, for a known or a brand new patient |
+| GET | `/api/v1/appointments` | any role | filters, sorting, pagination, a doctor sees only their own |
+| GET | `/api/v1/appointments/:id` | any role | a doctor only for their own |
+| PUT | `/api/v1/appointments/:id` | receptionist, super_admin | purpose and notes only |
+| DELETE | `/api/v1/appointments/:id` | receptionist, super_admin | soft cancel, takes an optional reason |
+| POST | `/api/v1/appointments/:id/arrive` | receptionist, super_admin | scheduled to arrived, on the day only |
+| POST | `/api/v1/appointments/:id/complete` | doctor, super_admin | arrived to completed, by the doctor on the visit |
+| GET | `/api/v1/dashboard` | any role | today for the desk, own today and upcoming for a doctor |
+
+## Appointments
+
+An appointment moves `scheduled` to `arrived` to `completed`, and any live state may be `cancelled`. The transitions live in one map, so an illegal move is a 409 that names both ends. A cancel is soft: the row stays as the record and simply leaves the active statuses.
+
+The active statuses also carry the partial unique index over `{ doctorId, date, startTime }`, which is what actually prevents a double booking. Working in parallel against one slot, exactly one request can win; the rest get a 409. Cancelling frees the slot again, because the row is no longer inside the index.
+
+The time is checked against the generated grid, not against the doctor's hours, so a Sunday, a lunch break and an off grid time like 09:07 all fail with the same clear 400.
 
 ## Slots
 

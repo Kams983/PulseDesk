@@ -53,9 +53,23 @@ Short notes per area, newest line at the bottom of each section. Ambiguities res
 - Schedule validation is all zod, so a rejected schedule comes back as `400` with `meta.details` naming the exact path, for example `schedule.0.sessions.1.start`. The refinement guards against empty and unparsable input because an inner rule failing still runs it.
 - Query filters treat an empty string as absent, because a filter widget sends its empty state as `?departmentId=&q=` rather than omitting the keys.
 
+## Patients
+
+- One search box serves a desk holding a patient card, a phone number or a name, so the shape of the term picks the field: a `PT-` value is an exact code match, digits are a mobile prefix, anything else is a name prefix. The name branch is anchored on `nameLower` so the index is used, and the term is escaped first so a typed dot or bracket cannot become a pattern of its own. That anchoring means a bare surname finds nobody when the stored name starts with a title, for example "Okafor" against "Dr. Ifeanyi Okafor"; the booking screen searches the same way, and a contains match would give that up for an index scan.
+- A doctor may only open a patient they have at least one appointment with. That keeps the register private without inventing a permission table, and it reuses the appointment index rather than adding a grant per patient.
+- Patient codes come from the shared counter through `patientService.nextPatientCode`, the same path the seed uses. A booking that fails after registering a patient deletes that patient again, so a rolled back booking leaves a gap in the code sequence rather than an orphan record. A gap is harmless; two patients sharing a code would not be.
+- A new patient whose mobile already exists is a 409 carrying the existing patient in `meta.details[0].existingPatient` (id, code, name, mobile), so the desk can offer "use this patient" instead of merging two people. The check is a friendly one; the unique index on mobile is the guard, and its duplicate key is translated into the same answer.
+
 ## Appointments and audit
 
-- The status workflow is defined once in `config/constants.js` and read from there, so no route can invent a transition. Invalid transitions are a 409, not a 400.
+- The status workflow is defined once in `config/constants.js` and read from there, so no route can invent a transition. Invalid transitions are a 409, not a 400, and the message names both ends, for example "Cannot move an appointment from completed to cancelled". Every state change goes through one `assertTransition(from, to)` helper.
+- The partial unique index over the active statuses is the real double booking guard, and no transaction is used because a standalone mongod has none. The service checks the slot first only to produce a readable error; when two requests pass that check at the same instant, one insert loses on the index and its duplicate key becomes a 409. Twenty parallel bookings leave exactly one appointment and nineteen refusals.
+- A cancel is soft and only changes the status, which is what takes the row out of the partial index and frees the slot. The cancelled row stays as the record of what happened.
+- `patientSnapshot` and `doctorSnapshot` are copied onto the appointment, so the list page searches, sorts and renders without a join. The trade is deliberate: a later rename does not rewrite history, and the snapshots are what the visit was booked against.
+- Sorting accepts only the four whitelisted fields, so client input never reaches the sort itself, and `_id` is appended as a final key. Many appointments share a date and a start time across doctors, and without a total order `skip` and `limit` can repeat a row on page two and drop another.
+- A doctor's scope is forced in the service, not in the route, so `?doctorId=` for someone else narrows nothing. The same rule covers reading one appointment and completing it.
+- Arriving is refused for an appointment dated after today, because the status and the date would otherwise contradict each other.
+- The dashboard is one aggregation grouped by status for the whole board, with a flag splitting today from what is still ahead. Six count queries would be six round trips for numbers that only add up if they describe the same moment.
 - Every state change records who did it in `AuditLog`, with the actor, the entity and the request metadata.
 - The audit helper resolves the actor from an `id` or an `_id`, because `authenticate` attaches a plain object while a service logging its own work holds a document. Without that, a row written from a route stored a role and no user, which is exactly the kind of hole an audit trail cannot have.
 

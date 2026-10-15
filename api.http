@@ -190,5 +190,127 @@ Content-Type: application/json
   "schedule": [{ "dayOfWeek": 1, "sessions": [{ "start": "9am", "end": "10:00" }] }]
 }
 
+### Patients, one box for a code, a mobile number or a name
+# curl -H "Authorization: Bearer $ACCESS_TOKEN" "http://localhost:5000/api/v1/patients?q=Chiamaka"
+GET {{host}}/patients?q=Chiamaka
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### The same box by code, and by mobile
+GET {{host}}/patients?q=PT-000001
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+GET {{host}}/patients?q=0803
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### One patient. A doctor is refused unless they have seen them
+GET {{host}}/patients/PASTE_A_PATIENT_ID
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### Book a slot for a new patient, the desk only knows a name and a mobile
+# curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d @booking.json http://localhost:5000/api/v1/appointments
+POST {{host}}/appointments
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "doctorId": "PASTE_A_DOCTOR_ID",
+  "date": "2026-10-16",
+  "startTime": "10:00",
+  "newPatient": { "name": "Uche Obi", "mobile": "08040001111", "gender": "male" },
+  "purpose": "Fever"
+}
+
+### Book for an existing patient
+POST {{host}}/appointments
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "doctorId": "PASTE_A_DOCTOR_ID",
+  "date": "2026-10-16",
+  "startTime": "10:15",
+  "patientId": "PASTE_A_PATIENT_ID"
+}
+
+### A time the grid does not offer, expect 400 with startTime named
+POST {{host}}/appointments
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "doctorId": "PASTE_A_DOCTOR_ID",
+  "date": "2026-10-16",
+  "startTime": "09:07",
+  "patientId": "PASTE_A_PATIENT_ID"
+}
+
+### A slot someone already holds, expect 409
+POST {{host}}/appointments
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "doctorId": "PASTE_A_DOCTOR_ID",
+  "date": "2026-10-16",
+  "startTime": "10:00",
+  "patientId": "PASTE_A_PATIENT_ID"
+}
+
+### The day's list with every filter
+# curl -H "Authorization: Bearer $TOKEN" "http://localhost:5000/api/v1/appointments?dateFrom=2026-10-16&dateTo=2026-10-16&status=scheduled&sortBy=startTime&sortOrder=asc&page=1&limit=10"
+GET {{host}}/appointments?dateFrom=2026-10-16&dateTo=2026-10-16&sortBy=startTime&sortOrder=asc&page=1&limit=10
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### Search the list by patient name, mobile or doctor name
+GET {{host}}/appointments?q=Chiamaka
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+GET {{host}}/appointments?doctor=dr.%20okafor&dateFrom=2026-10-16&dateTo=2026-10-16
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### A doctor asking for another doctor's list still only sees their own
+GET {{host}}/appointments?doctorId=PASTE_ANOTHER_DOCTOR_ID
+Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
+
+### One appointment
+GET {{host}}/appointments/PASTE_AN_APPOINTMENT_ID
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### Edit the purpose and notes
+PUT {{host}}/appointments/PASTE_AN_APPOINTMENT_ID
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "purpose": "Fever and rash",
+  "notes": "Sent for a blood test"
+}
+
+### The desk marks the patient arrived
+POST {{host}}/appointments/PASTE_AN_APPOINTMENT_ID/arrive
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### The doctor closes the visit
+POST {{host}}/appointments/PASTE_AN_APPOINTMENT_ID/complete
+Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
+
+### Cancel with a reason, expect 409 if it is already completed
+# curl -X DELETE -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"reason":"Patient called"}' http://localhost:5000/api/v1/appointments/$ID
+DELETE {{host}}/appointments/PASTE_AN_APPOINTMENT_ID
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "reason": "Patient called to cancel"
+}
+
+### The dashboard, which changes shape with the role
+# curl -H "Authorization: Bearer $TOKEN" http://localhost:5000/api/v1/dashboard
+GET {{host}}/dashboard
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+GET {{host}}/dashboard
+Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
+
 ### The 404 shape for an unknown route
 GET {{host}}/nope
