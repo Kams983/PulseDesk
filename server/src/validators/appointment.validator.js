@@ -54,10 +54,27 @@ const listAppointmentsQuerySchema = z
     }
   });
 
+const updateAppointmentSchema = z
+  .object({
+    purpose: z.string().trim().max(200).optional(),
+    notes: z.string().trim().max(1000).optional(),
+  })
+  .superRefine((payload, ctx) => {
+    if (payload.purpose === undefined && payload.notes === undefined) {
+      ctx.addIssue({ code: 'custom', message: 'Provide purpose or notes', path: ['purpose'] });
+    }
+  });
+
+const cancelAppointmentSchema = z.object({
+  reason: z.string().trim().max(200).optional(),
+});
+
 const appointmentIdParamSchema = z.object({ id: objectId('Expected an appointment id') });
 
 module.exports = {
   appointmentIdParamSchema,
+  cancelAppointmentSchema,
   createAppointmentSchema,
   listAppointmentsQuerySchema,
+  updateAppointmentSchema,
 };

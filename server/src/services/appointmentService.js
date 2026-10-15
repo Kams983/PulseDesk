@@ -1,10 +1,10 @@
-const { APPOINTMENT_SORT_FIELDS, APPOINTMENT_STATUS, ROLES } = require('../config/constants');
+const { ALLOWED_TRANSITIONS, APPOINTMENT_SORT_FIELDS, APPOINTMENT_STATUS, ROLES } = require('../config/constants');
 const Appointment = require('../models/appointment.model');
 const Doctor = require('../models/doctor.model');
 const Patient = require('../models/patient.model');
 const AppError = require('../utils/AppError');
 const { anchoredPrefix, escapeRegExp } = require('../utils/regex');
-const { isPastDate, isPastSlot } = require('../utils/time');
+const { isPastDate, isPastSlot, nowInClinicTz } = require('../utils/time');
 const { emitAppointmentChange } = require('../sockets/realtime');
 const { logAction } = require('./auditService');
 const doctorService = require('./doctorService');
@@ -134,6 +134,137 @@ async function getAppointmentById(appointmentId, user) {
   return appointment;
 }
 
+// only a receptionist or a super admin may rewrite the clinical notes of a booked visit
+async function updateAppointment(appointmentId, payload, user, ip) {
+  const appointment = await findForChange(appointmentId);
+
+  if ([APPOINTMENT_STATUS.COMPLETED, APPOINTMENT_STATUS.CANCELLED].includes(appointment.status)) {
+    throw AppError.conflict(`A ${appointment.status} appointment cannot be edited`);
+  }
+
+  const changed = {};
+
+  for (const field of ['purpose', 'notes']) {
+    if (payload[field] !== undefined && payload[field] !== appointment[field]) {
+      appointment[field] = payload[field];
+      changed[field] = payload[field];
+    }
+  }
+
+  // sending the same values back changes nothing, and an empty audit row would only be noise
+  if (Object.keys(changed).length > 0) {
+    await appointment.save();
+
+    await logAction({
+      user,
+      action: 'APPOINTMENT_UPDATED',
+      entity: 'Appointment',
+      entityId: appointment._id,
+      metadata: changed,
+      ip,
+    });
+
+    emitAppointmentChange('updated', appointment);
+  }
+
+  return appointment;
+}
+
+// a cancel is soft: the row stays as a record and only leaves the active statuses, which is what frees
+// the slot inside the partial unique index
+async function cancelAppointment(appointmentId, reason, user, ip) {
+  const appointment = await findForChange(appointmentId);
+
+  assertTransition(appointment.status, APPOINTMENT_STATUS.CANCELLED);
+
+  // captured before the change, because the audit row has to say what the appointment actually was
+  const previousStatus = appointment.status;
+
+  appointment.status = APPOINTMENT_STATUS.CANCELLED;
+  appointment.cancelledAt = new Date();
+
+  if (reason) {
+    appointment.cancelReason = reason;
+  }
+
+  await appointment.save();
+
+  await logAction({
+    user,
+    action: 'APPOINTMENT_CANCELLED',
+    entity: 'Appointment',
+    entityId: appointment._id,
+    metadata: { from: previousStatus, reason },
+    ip,
+  });
+
+  emitAppointmentChange('cancelled', appointment);
+
+  return appointment;
+}
+
+async function markArrived(appointmentId, user, ip) {
+  const appointment = await findForChange(appointmentId);
+
+  assertTransition(appointment.status, APPOINTMENT_STATUS.ARRIVED);
+
+  // nobody can arrive for tomorrow, so the status and the date would contradict each other
+  if (appointment.date > nowInClinicTz().toISODate()) {
+    throw AppError.conflict('This appointment is not due yet');
+  }
+
+  appointment.status = APPOINTMENT_STATUS.ARRIVED;
+  appointment.arrivedAt = new Date();
+  await appointment.save();
+
+  await logAction({
+    user,
+    action: 'APPOINTMENT_ARRIVED',
+    entity: 'Appointment',
+    entityId: appointment._id,
+    metadata: { date: appointment.date, startTime: appointment.startTime },
+    ip,
+  });
+
+  emitAppointmentChange('arrived', appointment);
+
+  return appointment;
+}
+
+async function completeAppointment(appointmentId, user, ip) {
+  const appointment = await findForChange(appointmentId);
+
+  await assertOwnsAppointment(appointment, user, 'complete');
+  assertTransition(appointment.status, APPOINTMENT_STATUS.COMPLETED);
+
+  appointment.status = APPOINTMENT_STATUS.COMPLETED;
+  appointment.completedAt = new Date();
+  await appointment.save();
+
+  await logAction({
+    user,
+    action: 'APPOINTMENT_COMPLETED',
+    entity: 'Appointment',
+    entityId: appointment._id,
+    metadata: { date: appointment.date, startTime: appointment.startTime },
+    ip,
+  });
+
+  emitAppointmentChange('completed', appointment);
+
+  return appointment;
+}
+
+// every status change passes through here, so no route can invent a transition the workflow does not
+// allow and the 409 message always names both ends of the move
+function assertTransition(from, to) {
+  const allowed = ALLOWED_TRANSITIONS[from] || [];
+
+  if (!allowed.includes(to)) {
+    throw AppError.conflict(`Cannot move an appointment from ${from} to ${to}`);
+  }
+}
+
 async function buildListFilter(query, user) {
   const filter = {};
 
@@ -252,11 +383,26 @@ async function resolvePatient(payload, user) {
   return { patient, createdNewPatient: true };
 }
 
+async function findForChange(appointmentId) {
+  const appointment = await Appointment.findById(appointmentId);
+
+  if (!appointment) {
+    throw AppError.notFound('Appointment not found');
+  }
+
+  return appointment;
+}
+
 module.exports = {
   APPOINTMENT_FIELDS,
   MAX_LIMIT,
   SORT_FIELDS,
+  assertTransition,
+  cancelAppointment,
+  completeAppointment,
   createAppointment,
   getAppointmentById,
   listAppointments,
+  markArrived,
+  updateAppointment,
 };

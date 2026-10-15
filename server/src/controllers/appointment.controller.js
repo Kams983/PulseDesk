@@ -23,6 +23,30 @@ async function getAppointment(req, res) {
   return sendSuccess(res, { data: { appointment: toAppointmentDto(appointment) } });
 }
 
+async function updateAppointment(req, res) {
+  const appointment = await appointmentService.updateAppointment(req.params.id, req.body, req.user, req.ip);
+
+  return sendSuccess(res, { message: 'Appointment updated', data: { appointment: toAppointmentDto(appointment) } });
+}
+
+async function cancelAppointment(req, res) {
+  const appointment = await appointmentService.cancelAppointment(req.params.id, req.body.reason, req.user, req.ip);
+
+  return sendSuccess(res, { message: 'Appointment cancelled', data: { appointment: toAppointmentDto(appointment) } });
+}
+
+async function markArrived(req, res) {
+  const appointment = await appointmentService.markArrived(req.params.id, req.user, req.ip);
+
+  return sendSuccess(res, { message: 'Patient marked as arrived', data: { appointment: toAppointmentDto(appointment) } });
+}
+
+async function completeAppointment(req, res) {
+  const appointment = await appointmentService.completeAppointment(req.params.id, req.user, req.ip);
+
+  return sendSuccess(res, { message: 'Appointment completed', data: { appointment: toAppointmentDto(appointment) } });
+}
+
 // the list page renders from the snapshots, so a row here never needs a join to be displayed
 function toAppointmentDto(appointment) {
   return {
@@ -52,4 +76,13 @@ function toAppointmentDto(appointment) {
   };
 }
 
-module.exports = { createAppointment, getAppointment, listAppointments, toAppointmentDto };
+module.exports = {
+  cancelAppointment,
+  completeAppointment,
+  createAppointment,
+  getAppointment,
+  listAppointments,
+  markArrived,
+  toAppointmentDto,
+  updateAppointment,
+};
