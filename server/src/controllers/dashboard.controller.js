@@ -8,4 +8,11 @@ async function getDashboard(req, res) {
   return sendSuccess(res, { data: dashboard });
 }
 
-module.exports = { getDashboard };
+// the chart series behind the dashboard card, one entry per day ending today
+async function getTrend(req, res) {
+  const trend = await dashboardService.getTrend(req.query.days || dashboardService.DEFAULT_TREND_DAYS, req.user);
+
+  return sendSuccess(res, { data: trend });
+}
+
+module.exports = { getDashboard, getTrend };

@@ -305,12 +305,27 @@ Content-Type: application/json
 }
 
 ### The dashboard, which changes shape with the role
+# The first key is `today`, the clinic's calendar date, which is the clock the client uses instead of
+# the browser's. Counts live under `counts.today` (and `counts.upcoming` for a doctor).
 # curl -H "Authorization: Bearer $TOKEN" http://localhost:5000/api/v1/dashboard
 GET {{host}}/dashboard
 Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
 
 GET {{host}}/dashboard
 Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
+
+### The seven day trend behind the chart, one entry per day ending today, zero filled
+# curl -H "Authorization: Bearer $TOKEN" "http://localhost:5000/api/v1/dashboard/trend?days=7"
+GET {{host}}/dashboard/trend
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
+### The same series for a doctor, which only counts their own appointments
+GET {{host}}/dashboard/trend?days=14
+Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
+
+### A window outside 1 to 31 days is a 400 naming the field
+GET {{host}}/dashboard/trend?days=99
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
 
 ### The 404 shape for an unknown route
 GET {{host}}/nope

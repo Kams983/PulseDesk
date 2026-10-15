@@ -102,7 +102,14 @@ Jest runs against an in-memory MongoDB, so no local database is needed and no re
 | DELETE | `/api/v1/appointments/:id` | receptionist, super_admin | soft cancel, takes an optional reason |
 | POST | `/api/v1/appointments/:id/arrive` | receptionist, super_admin | scheduled to arrived, on the day only |
 | POST | `/api/v1/appointments/:id/complete` | doctor, super_admin | arrived to completed, by the doctor on the visit |
-| GET | `/api/v1/dashboard` | any role | today for the desk, own today and upcoming for a doctor |
+| GET | `/api/v1/dashboard` | any role | the clinic's `today` plus today for the desk, own today and upcoming for a doctor |
+| GET | `/api/v1/dashboard/trend?days=7` | any role | one zero filled entry per day ending today, a doctor sees only their own |
+
+## Dashboard
+
+`GET /dashboard` answers with `today`, the clinic's calendar date in `CLINIC_TIMEZONE`, and the client uses that string everywhere instead of the browser clock, so what counts as past or today can never disagree with the server. Counts live under `counts.today`, and a doctor also gets `counts.upcoming`, which drops cancelled visits because those are no longer coming.
+
+`GET /dashboard/trend?days=7` returns one entry per day ending today, oldest first, zero filled, so a quiet day is a point on the chart rather than a hole in it. It is one grouped query over the date range and the gaps are filled in code. A doctor's series counts only their own appointments.
 
 ## Appointments
 
