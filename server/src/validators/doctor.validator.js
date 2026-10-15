@@ -1,10 +1,6 @@
 const { z } = require('zod');
-const { DateTime } = require('luxon');
 const { timeToMinutes } = require('../utils/time');
-
-const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
-const OBJECT_ID_PATTERN = /^[0-9a-fA-F]{24}$/;
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const { calendarDate, emptyMeansAbsent, objectId, TIME_PATTERN } = require('./common');
 
 const timeWindowSchema = z.object({
   name: z.string().trim().max(40).optional(),
@@ -76,7 +72,7 @@ const createDoctorSchema = z.object({
   name: z.string().trim().min(2, 'Name is too short').max(120),
   email: z.email(),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  departmentId: z.string().regex(OBJECT_ID_PATTERN, 'Expected a department id'),
+  departmentId: objectId('Expected a department id'),
   specialization: z.string().trim().max(120).optional(),
   slotDurationMinutes: z.coerce.number().int().min(5).max(120).default(15),
   schedule: scheduleSchema.default([]),
@@ -93,23 +89,16 @@ const updateScheduleSchema = z.object({
   schedule: scheduleSchema,
 });
 
-const doctorIdParamSchema = z.object({ id: z.string().regex(OBJECT_ID_PATTERN, 'Expected a doctor id') });
-
-// a filter widget usually sends its empty state as an empty string, which means "no filter" rather
-// than an invalid one, so those values are treated as absent
-const emptyMeansAbsent = (schema) => z.preprocess((value) => (value === '' ? undefined : value), schema);
+const doctorIdParamSchema = z.object({ id: objectId('Expected a doctor id') });
 
 const listDoctorsQuerySchema = z.object({
-  departmentId: emptyMeansAbsent(z.string().regex(OBJECT_ID_PATTERN, 'Expected a department id').optional()),
+  departmentId: emptyMeansAbsent(objectId('Expected a department id').optional()),
   q: emptyMeansAbsent(z.string().trim().min(1).max(80).optional()),
 });
 
 const slotsQuerySchema = z.object({
-  doctorId: z.string().regex(OBJECT_ID_PATTERN, 'Expected a doctor id'),
-  date: z
-    .string()
-    .regex(DATE_PATTERN, 'Expected a YYYY-MM-DD date')
-    .refine((date) => DateTime.fromISO(date, { zone: 'utc' }).isValid, 'That calendar date does not exist'),
+  doctorId: objectId('Expected a doctor id'),
+  date: calendarDate(),
 });
 
 module.exports = {

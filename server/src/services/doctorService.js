@@ -13,7 +13,7 @@ const DOCTOR_FIELDS = 'name departmentId specialization slotDurationMinutes sche
 async function listDoctors({ departmentId, q, requester } = {}) {
   if (requester.role === ROLES.DOCTOR) {
     // a doctor's own profile is the only one they may see, so the filters are ignored entirely
-    return findOwnProfile(requester.id, true);
+    return findOwnDoctorProfile(requester.id, true);
   }
 
   const filter = {};
@@ -49,7 +49,7 @@ async function assertCanViewDoctor(requester, doctorId) {
     return;
   }
 
-  const own = await findOwnProfile(requester.id);
+  const own = await findOwnDoctorProfile(requester.id);
 
   if (!own || own._id.toString() !== String(doctorId)) {
     throw AppError.forbidden('You can only view your own schedule');
@@ -165,7 +165,9 @@ async function findWithDepartment(doctorId) {
   return Doctor.findById(doctorId).select(DOCTOR_FIELDS).populate('departmentId', 'name code').lean();
 }
 
-async function findOwnProfile(userId, asList = false) {
+// the caller's own doctor profile. The patient and appointment services scope a doctor by it, so it
+// is exported rather than reimplemented per feature.
+async function findOwnDoctorProfile(userId, asList = false) {
   const doctor = await Doctor.findOne({ userId }).select(DOCTOR_FIELDS).populate('departmentId', 'name code').lean();
 
   if (asList) {
@@ -200,6 +202,7 @@ module.exports = {
   assertCanViewDoctor,
   createDoctor,
   createReceptionist,
+  findOwnDoctorProfile,
   getDoctorById,
   listDoctors,
   replaceSchedule,

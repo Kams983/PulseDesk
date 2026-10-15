@@ -3,7 +3,7 @@ const connectDb = require('../src/config/db');
 const { ROLES, APPOINTMENT_STATUS } = require('../src/config/constants');
 const { hashPassword } = require('../src/services/authService');
 const models = require('../src/models');
-const nextSequence = require('../src/utils/sequence');
+const patientService = require('../src/services/patientService');
 const { nowInClinicTz, timeToMinutes, minutesToTime } = require('../src/utils/time');
 
 const { User, RefreshToken, Department, Doctor, Patient, Appointment, AuditLog } = models;
@@ -61,13 +61,6 @@ function demoDate() {
   return tomorrow.toISODate();
 }
 
-// the code comes from the shared atomic counter, so the seed and the patient route cannot drift
-async function makePatientCode() {
-  const value = await nextSequence('patientCode');
-
-  return `PT-${String(value).padStart(6, '0')}`;
-}
-
 async function wipe() {
   await Promise.all([
     User.deleteMany({}),
@@ -123,7 +116,8 @@ async function createPatients(createdBy) {
       await Patient.create({
         ...spec,
         nameLower: spec.name.toLowerCase(),
-        patientCode: await makePatientCode(),
+        // the same generator the booking route uses, so the seed and the api cannot drift
+        patientCode: await patientService.nextPatientCode(),
         createdBy,
       })
     );
