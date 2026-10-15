@@ -2,8 +2,10 @@ const http = require('http');
 const app = require('./app');
 const env = require('./config/env');
 const connectDb = require('./config/db');
+// registers every schema, so mongoose builds the indexes as soon as the connection opens
+require('./models');
 
-// http server is created by hand so socket.io can attach to it later without touching this file
+// the http server is created by hand so socket.io can attach to it later without touching this file
 async function start() {
   await connectDb();
 

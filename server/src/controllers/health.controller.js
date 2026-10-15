@@ -1,4 +1,4 @@
-const { sendSuccess } = require('../utils/apiResponse');
+const { sendSuccess } = require('../utils/response');
 
 // liveness probe, also the proof in tests that the response envelope works
 function healthCheck(req, res) {
