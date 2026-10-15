@@ -16,6 +16,9 @@ function buildApp() {
   app.get('/search', validate(z.object({ page: z.coerce.number().int().min(1).default(1) }), 'query'), (req, res) =>
     sendSuccess(res, { data: req.query })
   );
+  app.get('/doctors/:id', validate(z.object({ id: z.string().length(24) }), 'params'), (req, res) =>
+    sendSuccess(res, { data: req.params })
+  );
   app.use(errorHandler);
 
   return app;
@@ -136,5 +139,15 @@ describe('validate middleware', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.meta.details[0].field).toBe('page');
+  });
+
+  it('validates params just like body and query', async () => {
+    const bad = await request(buildApp()).get('/doctors/123');
+    const good = await request(buildApp()).get('/doctors/507f1f77bcf86cd799439011');
+
+    expect(bad.status).toBe(400);
+    expect(bad.body.meta.details[0].field).toBe('id');
+    expect(good.status).toBe(200);
+    expect(good.body.data).toEqual({ id: '507f1f77bcf86cd799439011' });
   });
 });
