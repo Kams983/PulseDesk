@@ -4,7 +4,7 @@ Appointment module for a clinic: users and roles, doctor schedules, slot generat
 
 ## Stack
 
-- Server: Node, Express 5, MongoDB through Mongoose, CommonJS, zod for validation, Luxon for clinic timezone handling, Jest and supertest with mongodb-memory-server, socket.io for realtime later.
+- Server: Node, Express 5, MongoDB through Mongoose, CommonJS, zod for validation, Luxon for clinic timezone handling, socket.io for realtime, Jest and supertest with mongodb-memory-server and socket.io-client.
 - Client: Vite, React, React Router, TanStack Query, Tailwind, axios, socket.io-client.
 
 ## Layout
@@ -19,7 +19,7 @@ server/
     models/       User, RefreshToken, Department, Doctor, Patient, Appointment, AuditLog
     routes/       index.js plus one file per feature
     services/     all business logic
-    sockets/      realtime handlers
+    sockets/      socket.io wiring: index.js (auth, rooms) and appointmentEvents.js (emits)
     utils/        AppError, response, asyncHandler, sequence, time
     validators/   zod schemas
   tests/          jest suites, in-memory MongoDB
@@ -71,7 +71,7 @@ cd server
 npm test
 ```
 
-Jest runs against an in-memory MongoDB, so no local database is needed and no real data is touched. The first run downloads the mongod binary once and takes a few minutes, later runs are a few seconds.
+Jest runs against an in-memory MongoDB, so no local database is needed and no real data is touched. The first run downloads the mongod binary once and takes a few minutes, later runs are a few seconds. `tests/realtime.test.js` starts a real http server with socket.io attached and drives it with socket.io-client: it checks the handshake against a missing, a malformed and an expired token, then joins a room, books through the api and waits for the event, and it checks that a doctor cannot join another doctor's board.
 
 ## Trying the api
 
@@ -117,6 +117,20 @@ The time is checked against the generated grid, not against the doctor's hours, 
 Slots are never stored. `GET /api/v1/slots` takes a doctor and a calendar date, builds the grid from that weekday's sessions, trims the windows that fall inside a break, then marks each slot `booked` when an active appointment already holds it, `past` when the date or the time has gone, or `available`. A booked slot stays `booked` even after its time passes, so the day view still shows the appointment.
 
 The doctor's slot duration drives the step, which is why the seed gives the three doctors 15, 20 and 30 minutes: the same session shape produces grids of 28, 21 and 14 slots for tomorrow.
+
+## Realtime
+
+The socket.io server rides on the same http server and port as the api, and a connection is opened with the same access token: `io(url, { auth: { token } })`. A missing, malformed or expired token is refused with a `connect_error`, and the account behind it is re-read from the database, so a deactivated account loses its live board at the same moment it loses its requests.
+
+Rooms are `doctor:{doctorId}:{date}` for one doctor's day, `doctor-self:{doctorId}` for everything a doctor owns and `staff` for the desk. A receptionist or super admin is in `staff` from the moment they connect, a doctor is in their own `doctor-self` room, so both list screens are live without asking for anything. A scheduler screen narrows to one day with `scheduler:join { doctorId, date }` and drops it again with `scheduler:leave`; both acknowledge with `{ ok }`, and a doctor asking for another doctor's board is refused.
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `appointment:created` | `{ id, doctorId, date, startTime, status }` | a slot was booked |
+| `appointment:updated` | same | purpose or notes changed, a visit arrived or was completed |
+| `appointment:cancelled` | same | a visit was cancelled |
+
+The payload deliberately carries nothing but those five fields. The client refetches the row it already knows how to read, so no patient data travels over a second channel with its own authorization rules. Emitting is best effort: a socket failure is logged and never fails the api request that caused it.
 
 ## API conventions
 

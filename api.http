@@ -314,3 +314,12 @@ Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
 
 ### The 404 shape for an unknown route
 GET {{host}}/nope
+
+### Realtime: there is no request to send here, a socket carries it
+# The socket.io server listens on the same host and port. Connect with the access token:
+#   const socket = io("http://localhost:5000", { auth: { token: accessToken } });
+#   socket.emit("scheduler:join", { doctorId, date }, (ack) => console.log(ack));
+#   socket.emit("scheduler:leave", { doctorId, date }, (ack) => console.log(ack));
+# Then listen for appointment:created, appointment:updated and appointment:cancelled, each carrying
+# { id, doctorId, date, startTime, status } only. Refetch the row with the api above when one arrives.
+# A connection without a valid token is refused, and a doctor can only join their own board.
