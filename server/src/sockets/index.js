@@ -40,8 +40,8 @@ function getIo() {
   return io;
 }
 
-// The same access token the api uses, so a socket cannot outlive the session it was opened with, and
-// a deactivated account loses its live board at the same moment it loses its requests.
+// The same access token the api uses, so a socket cannot outlive the session it was opened with, and a
+// deactivated account loses its live board at the same moment it loses its requests.
 async function authenticateHandshake(socket, next) {
   const token = socket.handshake.auth ? socket.handshake.auth.token : undefined;
 
@@ -49,39 +49,56 @@ async function authenticateHandshake(socket, next) {
     return next(new Error('Access token missing'));
   }
 
-  let payload;
+  const payload = verifyToken(token);
 
-  try {
-    payload = jwt.verify(token, env.jwtAccessSecret);
-  } catch (err) {
-    // the client only needs to know the connection was refused, never which part of the token failed
+  if (!payload) {
+    // the client only needs to know the connection was refused, not which part of the token failed
     return next(new Error('Access token is invalid or expired'));
   }
 
-  const user = await User.findById(payload.sub).lean();
+  const user = await findActiveUser(payload.sub);
 
-  if (!user || !user.isActive) {
+  if (!user) {
     return next(new Error('Account is no longer active'));
   }
 
   socket.user = { id: user._id.toString(), role: user.role, name: user.name };
-
-  // Appointments and rooms are keyed by the doctor profile id, never by the user id. Resolving it
-  // here rather than on connect means the rooms below are joined before the client sees a connect,
-  // so no event can slip through the gap between connecting and being watchable.
-  if (user.role === ROLES.DOCTOR) {
-    const own = await doctorService.findOwnDoctorProfile(user._id);
-    socket.data.doctorId = own ? own._id.toString() : null;
-  }
+  // Resolved before the client sees a connect, so a doctor's own room is already joined by then
+  socket.data.doctorId = await ownDoctorId(user);
 
   return next();
 }
 
+function verifyToken(token) {
+  try {
+    return jwt.verify(token, env.jwtAccessSecret);
+  } catch (error) {
+    return null;
+  }
+}
+
+async function findActiveUser(userId) {
+  const user = await User.findById(userId).lean();
+
+  return user && user.isActive ? user : null;
+}
+
+// Appointments and rooms are keyed by the doctor profile id, never by the user id
+async function ownDoctorId(user) {
+  if (user.role !== ROLES.DOCTOR) {
+    return null;
+  }
+
+  const own = await doctorService.findOwnDoctorProfile(user._id);
+
+  return own ? own._id.toString() : null;
+}
+
 function handleConnection(socket) {
-  // Rooms that stay open for the whole session: the desk watches every doctor, a doctor watches
-  // their own day. The list page is live from the moment it connects, without asking for anything.
+  // Rooms that stay open for the whole session: the desk watches every doctor, a doctor watches their
+  // own day. Both list screens are live from the moment they connect.
   if (socket.user.role === ROLES.DOCTOR) {
-    // a doctor account without a profile can watch nothing, which is the same answer the api gives
+    // a doctor account without a profile can watch nothing, which is the answer the api gives too
     if (socket.data.doctorId) {
       socket.join(doctorSelfRoom(socket.data.doctorId));
     }
@@ -93,7 +110,7 @@ function handleConnection(socket) {
   socket.on('scheduler:leave', (payload, ack) => leaveScope(socket, payload, ack));
 }
 
-// A client joins one doctor and one date, which is exactly what the board on screen is showing.
+// a client joins one doctor and one date, which is what the board on screen is showing
 function joinScope(socket, payload, ack) {
   const scope = parseScope(socket, payload);
 
@@ -101,11 +118,9 @@ function joinScope(socket, payload, ack) {
     return respond(ack, { ok: false, error: scope.error });
   }
 
-  const { doctorId, date } = scope.value;
+  socket.join(doctorDateRoom(scope.value.doctorId, scope.value.date));
 
-  socket.join(doctorDateRoom(doctorId, date));
-
-  return respond(ack, { ok: true, room: doctorDateRoom(doctorId, date) });
+  return respond(ack, { ok: true, room: doctorDateRoom(scope.value.doctorId, scope.value.date) });
 }
 
 function leaveScope(socket, payload, ack) {
@@ -115,16 +130,14 @@ function leaveScope(socket, payload, ack) {
     return respond(ack, { ok: false, error: scope.error });
   }
 
-  const { doctorId, date } = scope.value;
-
   // leaving a room the socket never joined is harmless, so a stale page can always clean up
-  socket.leave(doctorDateRoom(doctorId, date));
+  socket.leave(doctorDateRoom(scope.value.doctorId, scope.value.date));
 
   return respond(ack, { ok: true });
 }
 
-// The scope is validated here rather than derived from the connection, so a receptionist can watch
-// any doctor and a doctor may only watch themselves.
+// The scope is validated here rather than taken from the connection, so a receptionist may watch any
+// doctor and a doctor may only watch themselves.
 function parseScope(socket, payload) {
   const parsed = schedulerScopeSchema.safeParse(payload);
 
@@ -139,7 +152,7 @@ function parseScope(socket, payload) {
   return { ok: true, value: parsed.data };
 }
 
-// the ack is optional, so a plain emit without a callback still joins or leaves the room
+// the ack is optional, so an emit without a callback still joins or leaves the room
 function respond(ack, result) {
   if (typeof ack === 'function') {
     ack(result);
