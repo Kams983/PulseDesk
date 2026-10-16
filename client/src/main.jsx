@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App.jsx';
 import { AuthProvider } from '@/context/AuthContext';
+import { SocketProvider } from '@/context/SocketContext';
 import { ToastProvider } from '@/context/ToastContext';
 import './index.css';
 
@@ -26,7 +27,10 @@ createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <ToastProvider>
           <AuthProvider>
-            <App />
+            {/* inside the session provider: the socket is opened once there is a session to open it with */}
+            <SocketProvider>
+              <App />
+            </SocketProvider>
           </AuthProvider>
         </ToastProvider>
       </BrowserRouter>

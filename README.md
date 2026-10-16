@@ -30,7 +30,8 @@ client/
       ui/         the design system: Button, Input, Select, Card, Badge, Modal, Toast, ...
       layout/     AppLayout, Sidebar (the rail), TopBar (account menu and the phone drawer)
       dashboard/  TrendChart, DayList, UpcomingCard, DoctorsOnDuty
-    context/      AuthContext (the session) and ToastContext
+      scheduler/  SchedulerFilters, SlotGrid, SlotButton, BookingModal, PatientPicker, LiveIndicator
+    context/      AuthContext (the session), SocketContext (the one live connection), ToastContext
     hooks/        useDebounce, useSocket
     pages/        Dashboard, Scheduler, Appointments, Doctors, Login, NotFound
     routes/       AppRoutes plus the ProtectedRoute guard
@@ -118,6 +119,16 @@ Jest runs against an in-memory MongoDB, so no local database is needed and no re
 | GET | `/api/v1/dashboard` | any role | the clinic's `today` plus today for the desk, own today and upcoming for a doctor |
 | GET | `/api/v1/dashboard/trend?days=7` | any role | one zero filled entry per day ending today, a doctor sees only their own |
 
+## What the frontend covers
+
+| Screen | Roles | Notes |
+| --- | --- | --- |
+| Sign in | public | seeds the form with a demo account per role |
+| Dashboard | any role | counts, trend, the selected day's visits, calendar |
+| Scheduler | any role | doctor and day, slot grid; booking for the desk, read only for a doctor |
+| Appointments | any role | filters, paging and the status actions land in the next phase |
+| Doctors | super_admin | the register and the schedule editor land in the next phase |
+
 ## Frontend
 
 The client is a Vite and React app. Tailwind holds every colour, radius and shadow in one config, and a status is defined once in `utils/constants.js`, so an appointment cannot be blue on the board and green in a badge. Nothing on screen is computed that the server already knows: the clinic's `today` comes from the dashboard response and the browser clock is never the reference, which is why the calendar highlights the server's today separately from the day you picked.
@@ -125,6 +136,16 @@ The client is a Vite and React app. Tailwind holds every colour, radius and shad
 The access token lives in memory only and the refresh token in an `httpOnly` cookie, so a reload restores the session with one silent refresh instead of a stored credential. A 401 on any request triggers exactly one refresh, the requests that failed while it was in flight are replayed once, and a refresh that fails signs the user out.
 
 The dashboard is the clinic board: five counts read from `counts.today`, a range selector over the trend endpoint, and a calendar whose selected day drives the list beside it. A doctor gets their own counts plus an upcoming block; the desk gets the on-duty register instead. Pages that belong to a later phase are reachable and honest about it rather than being dead links.
+
+The scheduler is one doctor on one day. A department select narrows a doctor select, a strip of the next seven days plus a date input picks the day, and the slots the api generated are grouped into a morning and an afternoon session. A booked slot is tinted by its own appointment status and carries the patient's name, which is the part a doctor actually reads. Only a receptionist or a super admin can click an available slot; a doctor opens their own board read only.
+
+Booking runs through a dialog with two paths into the same visit: an existing patient found through one debounced search box, or a new one registered on the spot. Both conflicts the api can answer with are handled in the dialog itself: a slot taken in the meantime is acknowledged and the grid behind it is refreshed, and a mobile number that already exists offers the patient it belongs to instead of a dead end.
+
+## Scheduler and booking
+
+The board is live. One socket is opened for the whole app when there is a session and closed when it goes away, the page joins the room for the doctor and day it is showing, and `appointment:created`, `appointment:updated` and `appointment:cancelled` refresh the grid and the day list, but only when the event names the doctor and date on screen. A booking made in another browser therefore lands on the board in about a fifth of a second, without a refresh.
+
+Past slots and booked slots are disabled, so the only thing a click can mean is a booking. Every day the doctor does not work says so instead of showing an empty grid, and a day with no slots says something else, because those are two different facts.
 
 
 ## Dashboard

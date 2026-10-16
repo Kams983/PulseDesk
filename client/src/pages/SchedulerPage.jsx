@@ -7,6 +7,7 @@ import EmptyState from '@/components/ui/EmptyState';
 import ErrorMessage from '@/components/ui/ErrorMessage';
 import Skeleton from '@/components/ui/Skeleton';
 import BookingModal from '@/components/scheduler/BookingModal';
+import LiveIndicator from '@/components/scheduler/LiveIndicator';
 import SlotGrid from '@/components/scheduler/SlotGrid';
 import SchedulerFilters from '@/components/scheduler/SchedulerFilters';
 import { listAppointments } from '@/api/appointmentApi';
@@ -14,13 +15,17 @@ import { getDashboard } from '@/api/dashboardApi';
 import { listDepartments, listDoctors } from '@/api/doctorApi';
 import { listSlots } from '@/api/slotApi';
 import { useAuth } from '@/context/AuthContext';
+import { useRealtime } from '@/context/SocketContext';
 import { canBookAppointments } from '@/utils/constants';
 import { weekdayIndex } from '@/utils/dateUtils';
 import { formatDateLong, pluralize } from '@/utils/formatters';
 
+const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointment:cancelled'];
+
 // One doctor, one day, slot by slot: the board a receptionist books from and a doctor reads.
 export default function SchedulerPage() {
   const { user } = useAuth();
+  const { socket, status: liveStatus } = useRealtime();
   const queryClient = useQueryClient();
   const canBook = canBookAppointments(user.role);
 
@@ -85,6 +90,52 @@ export default function SchedulerPage() {
   // every button in the grid re-render on every keystroke in the booking dialog.
   const handleSelectSlot = useCallback((startTime) => setSelectedStart(startTime), []);
 
+  // Watching one doctor on one day is what the room is: leaving the previous one is what keeps a lap
+  // around the clinic from subscribing this socket to every board it ever showed.
+  // The room lives on the server's side of the connection, so a reconnect arrives as a brand new socket
+  // that belongs to no room at all. Joining on connect as well as on mount is what keeps a board that
+  // survived a dropped connection live afterwards instead of quietly frozen.
+  useEffect(() => {
+    if (!socket || !doctorId || !date) {
+      return undefined;
+    }
+
+    function join() {
+      socket.emit('scheduler:join', { doctorId, date });
+    }
+
+    join();
+    socket.on('connect', join);
+
+    return () => {
+      socket.off('connect', join);
+      socket.emit('scheduler:leave', { doctorId, date });
+    };
+  }, [socket, doctorId, date]);
+
+  useEffect(() => {
+    if (!socket) {
+      return undefined;
+    }
+
+    // The server broadcasts to every staff socket and to the doctor's own room, so one booking wakes
+    // every board in the clinic. Only the boards already showing this doctor and this date refetch, and
+    // the event payload carries exactly those two fields plus the appointment, never a patient.
+    function onAppointmentEvent(payload) {
+      if (payload.doctorId !== doctorId || payload.date !== date) {
+        return;
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['slots', doctorId, date] });
+      queryClient.invalidateQueries({ queryKey: ['appointments', 'day', doctorId, date] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    }
+
+    REALTIME_EVENTS.forEach((event) => socket.on(event, onAppointmentEvent));
+
+    return () => REALTIME_EVENTS.forEach((event) => socket.off(event, onAppointmentEvent));
+  }, [socket, doctorId, date, queryClient]);
+
   function refresh() {
     slots.refetch();
     day.refetch();
@@ -143,6 +194,7 @@ export default function SchedulerPage() {
         action={
           <div className="flex items-center gap-2">
             {isRefreshing ? <span className="text-xs text-ink-muted">Updating…</span> : null}
+            <LiveIndicator status={liveStatus} />
             <Button size="sm" variant="ghost" onClick={refresh} aria-label="Refresh the board">
               <RefreshCw size={15} aria-hidden="true" />
             </Button>
