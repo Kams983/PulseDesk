@@ -49,6 +49,10 @@ export const STAT_CARDS = [
   { key: APPOINTMENT_STATUS.CANCELLED, label: 'Cancelled', icon: CalendarX2, tone: 'bg-cancelled-tint text-cancelled' },
 ];
 
+// The only fields the api will sort the appointment list by, in the order the table offers them. The
+// client keeps its own copy so a header can decide whether it is sortable without guessing.
+export const APPOINTMENT_SORT_FIELDS = ['date', 'startTime', 'createdAt', 'status'];
+
 // the three states a generated slot can be in. Available is the only one that can be clicked, which is
 // why the disabled ones carry their own cursor and softer colour instead of looking merely greyed.
 export const SLOT_STATUS = {

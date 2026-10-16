@@ -52,6 +52,21 @@ export function formatDateLong(iso) {
   return formatDate(iso, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 }
 
+// An instant is not a calendar date: createdAt, arrivedAt and completedAt are real ISO timestamps, and a
+// booking made at 00:30 in Lagos carries the previous day in UTC. Calendar dates stay clinic-owned
+// strings read in UTC; an instant belongs to the clock of whoever is reading it.
+export function formatStamp(iso, options = { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) {
+  if (!iso) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat('en-GB', options).format(new Date(iso));
+}
+
+export function formatStampTime(iso) {
+  return formatStamp(iso, { hour: 'numeric', minute: '2-digit' });
+}
+
 export function firstName(name = '') {
   return name.trim().split(/\s+/)[0] || name;
 }
