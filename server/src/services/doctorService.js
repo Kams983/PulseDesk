@@ -153,8 +153,12 @@ async function createWithRollback(create, rollback) {
     // the rollback itself must not hide the original failure, but a failed rollback has to be visible
     await rollback().catch((rollbackError) => console.error('doctor rollback failed:', rollbackError.message));
 
+    // the backstop for two requests that pass the check above at the same instant: one insert loses on
+    // the unique index, and the loser must still be told which field is the problem
     if (err.code === 11000) {
-      throw AppError.conflict('A user with that email already exists');
+      throw AppError.conflict('A user with that email already exists', [
+        { field: 'email', message: 'That email is already in use' },
+      ]);
     }
 
     throw err;
@@ -186,11 +190,16 @@ async function assertDepartmentExists(departmentId) {
   }
 }
 
+// The field is named so the form can put the answer beside the email box, which is where the person who
+// typed it is looking. A 409 with no details falls back to a banner on the client, and "already exists"
+// over a form of six inputs does not say which one to change.
 async function assertEmailIsFree(email) {
   const existing = await User.exists({ email: String(email).toLowerCase() });
 
   if (existing) {
-    throw AppError.conflict('A user with that email already exists');
+    throw AppError.conflict('A user with that email already exists', [
+      { field: 'email', message: 'That email is already in use' },
+    ]);
   }
 }
 

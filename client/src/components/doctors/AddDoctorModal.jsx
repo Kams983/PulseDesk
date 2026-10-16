@@ -9,7 +9,7 @@ import Modal from '@/components/ui/Modal';
 import Select from '@/components/ui/Select';
 import { createDoctor } from '@/api/doctorApi';
 import { useToast } from '@/context/ToastContext';
-import { applyServerErrors } from '@/utils/formErrors';
+import { applyServerErrors, hasFieldErrors } from '@/utils/formErrors';
 
 const SLOT_DURATIONS = [10, 15, 20, 30, 45, 60];
 
@@ -73,7 +73,7 @@ export default function AddDoctorModal({ departments, onClose, onCreated }) {
       }
     >
       <form id="add-doctor-form" className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
-        {save.isError ? (
+        {save.isError && !hasFieldErrors(save.error) ? (
           <p className="flex items-start gap-2 rounded-card bg-danger-tint px-4 py-3 text-sm text-danger">
             <TriangleAlert size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
             {save.error.message}

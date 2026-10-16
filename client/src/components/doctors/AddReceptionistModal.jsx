@@ -8,7 +8,7 @@ import Input from '@/components/ui/Input';
 import Modal from '@/components/ui/Modal';
 import { createReceptionist } from '@/api/doctorApi';
 import { useToast } from '@/context/ToastContext';
-import { applyServerErrors } from '@/utils/formErrors';
+import { applyServerErrors, hasFieldErrors } from '@/utils/formErrors';
 
 const schema = z.object({
   name: z.string().trim().min(2, 'Name is too short').max(120),
@@ -58,7 +58,7 @@ export default function AddReceptionistModal({ onClose, onCreated }) {
       }
     >
       <form id="add-receptionist-form" className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
-        {save.isError ? (
+        {save.isError && !hasFieldErrors(save.error) ? (
           <p className="flex items-start gap-2 rounded-card bg-danger-tint px-4 py-3 text-sm text-danger">
             <TriangleAlert size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
             {save.error.message}
