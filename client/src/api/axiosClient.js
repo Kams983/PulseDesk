@@ -95,13 +95,32 @@ export function refreshAccessToken() {
 
 // A raw status code or a stack trace is never shown to a user: the shape here is what ErrorMessage and
 // the form error banner render.
+//
+// The fallback matters more than it looks. When the api answers properly it sends its own sentence and
+// that is what is shown. When the request never reached the api at all, such as a dev proxy whose
+// upstream is down or a browser that is offline, there is no body and axios's own message is
+// "Request failed with status code 502", which is a status code and a library name on a clinic desk's
+// screen. So the no-body case gets a sentence of ours instead.
 export function normalizeError(error) {
   const body = error.response?.data;
+  const status = error.response?.status;
 
   return {
-    message: body?.message || error.message || 'Something went wrong',
+    message: body?.message || fallbackMessage(status),
     code: body?.meta?.code,
     details: body?.meta?.details || [],
-    status: error.response?.status,
+    status,
   };
+}
+
+function fallbackMessage(status) {
+  if (!status) {
+    return 'Cannot reach the server. Check your connection and try again.';
+  }
+
+  if (status >= 500) {
+    return 'The server could not answer that request. Try again in a moment.';
+  }
+
+  return 'That request could not be completed.';
 }
