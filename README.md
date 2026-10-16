@@ -150,8 +150,8 @@ Content-Type: application/json
   "success": true,
   "message": "Signed in",
   "data": {
-    "user": { "id": "...", "name": "Front Desk", "email": "reception@emr.test", "role": "receptionist" },
-    "accessToken": "<jwt, 15m>"
+    "accessToken": "<jwt, 15m>",
+    "user": { "id": "...", "name": "Front Desk", "email": "reception@emr.test", "role": "receptionist" }
   },
   "meta": {}
 }
@@ -244,7 +244,7 @@ Authorization: Bearer <token>
 ```json
 {
   "success": true,
-  "message": "Appointments fetched",
+  "message": "OK",
   "data": {
     "appointments": [
       {
@@ -328,7 +328,18 @@ npm run dev:client     # http://localhost:5173, proxies /api and /socket.io to t
 
 The helper scripts in the root `package.json` are thin wrappers (`npm --prefix`), so `cd server && npm run dev` is exactly equivalent. There is also `npm run install:all`, `npm run seed` and `npm test` at the root.
 
-A missing or malformed variable, for example a short `JWT_ACCESS_SECRET`, makes the server exit immediately with the exact problem printed. If your shell already exports `PORT` (some tooling sets it to `0`), that value wins over `server/.env` and the two would disagree: run it with `PORT=5000 npm run dev` in that case.
+A missing or malformed variable, for example a short `JWT_ACCESS_SECRET`, makes the server exit immediately with the exact problem printed:
+
+```
+Invalid environment configuration:
+  JWT_ACCESS_SECRET: JWT_ACCESS_SECRET must be at least 32 characters
+```
+
+One caveat worth knowing before it bites: the shell environment wins over `server/.env`, because that is how `dotenv` works. If something in your environment already exports `PORT` (some tooling sets it to `0`), the server reads that instead and refuses to start, printing `PORT: Too small: expected number to be >0`. It affects `npm run dev` and `npm run seed` alike, and the fix is to unset it for the command:
+
+```
+env -u PORT npm run dev      # and the same for npm run seed
+```
 
 ### Seed the demo data
 
