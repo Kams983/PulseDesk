@@ -12,9 +12,9 @@ const PERIODS = [
 ];
 
 const LEGEND = [
-  { status: SLOT_STATUS.AVAILABLE, text: `${SLOT_STYLES[SLOT_STATUS.AVAILABLE].label} — click to book` },
-  { status: SLOT_STATUS.BOOKED, text: 'Booked — taken by a visit' },
-  { status: SLOT_STATUS.PAST, text: 'Past — gone for the day' },
+  { status: SLOT_STATUS.AVAILABLE, text: `${SLOT_STYLES[SLOT_STATUS.AVAILABLE].label}: click to book` },
+  { status: SLOT_STATUS.BOOKED, text: 'Booked: taken by a visit' },
+  { status: SLOT_STATUS.PAST, text: 'Past: gone for the day' },
 ];
 
 // Memoised together with the buttons: the page re-renders on every keystroke in the booking modal and on

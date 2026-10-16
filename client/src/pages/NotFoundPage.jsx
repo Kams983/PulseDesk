@@ -3,8 +3,11 @@ import { Compass } from 'lucide-react';
 import Card from '@/components/ui/Card';
 import EmptyState from '@/components/ui/EmptyState';
 import Button from '@/components/ui/Button';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 export default function NotFoundPage() {
+  useDocumentTitle('Page not found');
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-page p-6">
       <Card className="w-full max-w-md" bodyClassName="p-6">

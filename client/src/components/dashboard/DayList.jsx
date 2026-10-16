@@ -41,7 +41,7 @@ export default function DayList({ appointments = [], isLoading, error, onRetry, 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-ink">{appointment.patient.name}</p>
             <p className="truncate text-xs text-ink-muted">
-              {appointment.purpose || 'No purpose recorded'} · {formatTime(appointment.startTime)}–
+              {appointment.purpose || 'No purpose recorded'} · {formatTime(appointment.startTime)}-
               {formatTime(appointment.endTime)}
             </p>
           </div>

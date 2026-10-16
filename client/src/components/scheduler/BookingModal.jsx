@@ -194,7 +194,7 @@ export default function BookingModal({ doctor, date, slot, onClose, onBooked }) 
         </p>
         <p className="mt-0.5 text-sm text-ink-muted">
           {formatDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} ·{' '}
-          {formatTime(slot.startTime)}–{formatTime(slot.endTime)} · {pluralize(doctor.slotDurationMinutes, 'minute')} slots
+          {formatTime(slot.startTime)}-{formatTime(slot.endTime)} · {pluralize(doctor.slotDurationMinutes, 'minute')} slots
         </p>
       </div>
 

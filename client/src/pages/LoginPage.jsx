@@ -9,6 +9,7 @@ import Input from '@/components/ui/Input';
 import Spinner from '@/components/ui/Spinner';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { firstName } from '@/utils/formatters';
 
 // the same accounts the seed creates, so a reviewer can sign in as each role without typing
@@ -25,6 +26,8 @@ const schema = z.object({
 });
 
 export default function LoginPage() {
+  useDocumentTitle('Sign in');
+
   const { user, isLoading, login } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();

@@ -16,6 +16,7 @@ import { listDepartments, listDoctors } from '@/api/doctorApi';
 import { listSlots } from '@/api/slotApi';
 import { useAuth } from '@/context/AuthContext';
 import { useRealtime } from '@/context/SocketContext';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { canBookAppointments } from '@/utils/constants';
 import { weekdayIndex } from '@/utils/dateUtils';
 import { formatDateLong, pluralize } from '@/utils/formatters';
@@ -24,6 +25,8 @@ const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointm
 
 // One doctor, one day, slot by slot: the board a receptionist books from and a doctor reads.
 export default function SchedulerPage() {
+  useDocumentTitle('Scheduler');
+
   const { user } = useAuth();
   const { socket, status: liveStatus } = useRealtime();
   const queryClient = useQueryClient();

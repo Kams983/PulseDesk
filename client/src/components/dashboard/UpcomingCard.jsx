@@ -33,7 +33,7 @@ export default function UpcomingCard({ counts, isLoading }) {
           <li key={key} className="flex items-center gap-2 text-sm">
             <span className={`h-2 w-2 rounded-pill ${STATUS_STYLES[key].dot}`} aria-hidden="true" />
             <span className="flex-1 text-white/80">{label}</span>
-            <span className="font-semibold">{isLoading ? '—' : (counts?.[key] ?? 0)}</span>
+            <span className="font-semibold">{isLoading ? '-' : (counts?.[key] ?? 0)}</span>
           </li>
         ))}
       </ul>

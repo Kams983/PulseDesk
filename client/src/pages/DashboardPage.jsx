@@ -17,6 +17,7 @@ import { getDashboard, getTrend } from '@/api/dashboardApi';
 import { listAppointments } from '@/api/appointmentApi';
 import { listDoctors } from '@/api/doctorApi';
 import { useAuth } from '@/context/AuthContext';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { ROLES, STAT_CARDS } from '@/utils/constants';
 import { formatDate, formatDateLong, greetingFor, greetingName, pluralize } from '@/utils/formatters';
 
@@ -29,6 +30,8 @@ const TREND_RANGES = [
 // The board is read only and every number it needs comes from two endpoints plus the day under the
 // calendar, so nothing here is computed that the server already knows.
 export default function DashboardPage() {
+  useDocumentTitle('Dashboard');
+
   const { user } = useAuth();
   const [trendDays, setTrendDays] = useState(7);
   // null rather than a date until the server reports today: the browser clock is never the reference

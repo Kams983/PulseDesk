@@ -15,7 +15,8 @@ export function toDate(iso) {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
-export function toIso(date) {
+// internal: the only values that leave this module are the YYYY-MM-DD strings it takes and returns
+function toIso(date) {
   return date.toISOString().slice(0, 10);
 }
 
@@ -84,8 +85,4 @@ export function dateStrip(from, count) {
 
 export function isSameMonth(iso, monthIso) {
   return iso.slice(0, 7) === monthIso.slice(0, 7);
-}
-
-export function isBefore(a, b) {
-  return a < b;
 }

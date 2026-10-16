@@ -26,7 +26,7 @@ function SlotButton({ startTime, endTime, status, appointmentStatus, patientName
       disabled={!canClick}
       onClick={canClick ? () => onSelect(startTime) : undefined}
       aria-label={`${formatTime(startTime)} ${formatTime(endTime)} ${style.label}${patientName ? `, ${patientName}` : ''}`}
-      title={patientName ? `${formatTime(startTime)} – ${patientName}` : `${formatTime(startTime)} – ${formatTime(endTime)}`}
+      title={patientName ? `${formatTime(startTime)} - ${patientName}` : `${formatTime(startTime)} - ${formatTime(endTime)}`}
       className={`flex w-full flex-col items-start gap-0.5 rounded-control border px-3 py-2 text-left transition ${
         isBooked ? bookedClass : style.button
       } ${isSelected ? 'ring-2 ring-primary ring-offset-2 ring-offset-page' : ''}`}
