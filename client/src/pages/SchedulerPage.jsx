@@ -51,11 +51,10 @@ export default function SchedulerPage() {
     enabled: Boolean(today),
   });
 
-  const doctor = useMemo(() => (doctors.data || []).find((item) => item.id === doctorId) || null, [doctors.data, doctorId]);
+  const doctor = (doctors.data || []).find((item) => item.id === doctorId) || null;
 
   // A doctor account only ever gets its own record back, so it is preselected and the board opens on
-  // itself. And a doctor the department filter just removed cannot stay selected, or the grid would keep
-  // showing someone the filters say is no longer in view.
+  // itself. A doctor the department filter just removed cannot stay selected either.
   useEffect(() => {
     const list = doctors.data || [];
 
@@ -70,8 +69,8 @@ export default function SchedulerPage() {
     queryKey: ['slots', doctorId, date],
     queryFn: () => listSlots(doctorId, date),
     enabled: Boolean(doctorId && date),
-    // the previous day's grid stays on screen while the next one loads, so switching day or doctor does
-    // not blink through an empty board
+    // the previous day's grid stays on screen while the next one loads, so switching day or doctor
+    // does not blink through an empty board
     placeholderData: keepPreviousData,
   });
 
@@ -84,20 +83,20 @@ export default function SchedulerPage() {
     placeholderData: keepPreviousData,
   });
 
+  // Memoised because it is handed to the memoised grid: a new map on every render would redraw every
+  // slot button.
   const bookedByStart = useMemo(
     () => new Map((day.data?.appointments || []).map((appointment) => [appointment.startTime, appointment])),
     [day.data]
   );
 
-  // Stable on purpose: SlotButton is memoised, and a handler that was rebuilt every render would make
-  // every button in the grid re-render on every keystroke in the booking dialog.
+  // Stable for the same reason: SlotButton only skips a redraw if this function never changes.
   const handleSelectSlot = useCallback((startTime) => setSelectedStart(startTime), []);
 
-  // Watching one doctor on one day is what the room is: leaving the previous one is what keeps a lap
-  // around the clinic from subscribing this socket to every board it ever showed.
-  // The room lives on the server's side of the connection, so a reconnect arrives as a brand new socket
-  // that belongs to no room at all. Joining on connect as well as on mount is what keeps a board that
-  // survived a dropped connection live afterwards instead of quietly frozen.
+  // Watching one doctor on one day is what the room is; leaving the previous one is what keeps a lap
+  // around the clinic from subscribing this socket to every board it ever showed. A reconnect arrives
+  // as a new socket in no room at all, so joining on connect as well is what keeps a board that
+  // survived a dropped connection live afterwards.
   useEffect(() => {
     if (!socket || !doctorId || !date) {
       return undefined;
@@ -122,8 +121,7 @@ export default function SchedulerPage() {
     }
 
     // The server broadcasts to every staff socket and to the doctor's own room, so one booking wakes
-    // every board in the clinic. Only the boards already showing this doctor and this date refetch, and
-    // the event payload carries exactly those two fields plus the appointment, never a patient.
+    // every board in the clinic. Only the boards showing this doctor and this date refetch.
     function onAppointmentEvent(payload) {
       if (payload.doctorId !== doctorId || payload.date !== date) {
         return;
@@ -165,11 +163,7 @@ export default function SchedulerPage() {
     <div className="grid gap-5 lg:grid-cols-[20rem_1fr]">
       <Card title="Filters" subtitle="Who, and which day">
         {board.isLoading || departments.isLoading ? (
-          <div className="space-y-3">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-32 w-full" />
-          </div>
+          <FiltersSkeleton />
         ) : (
           <SchedulerFilters
             departments={departments.data || []}
@@ -187,13 +181,7 @@ export default function SchedulerPage() {
 
       <Card
         title={doctor ? doctor.name : 'The day board'}
-        subtitle={
-          doctor
-            ? `${doctor.department.name} · ${pluralize(doctor.slotDurationMinutes, 'minute')} slots${
-                date ? ` · ${formatDateLong(date)}` : ''
-              }`
-            : 'Pick a doctor to see their slots'
-        }
+        subtitle={boardSubtitle({ doctor, date })}
         action={
           <div className="flex items-center gap-2">
             {isRefreshing ? <span className="text-xs text-ink-muted">Updating…</span> : null}
@@ -204,46 +192,18 @@ export default function SchedulerPage() {
           </div>
         }
       >
-        {!doctorId ? (
-          <EmptyState
-            icon={Stethoscope}
-            title="No doctor selected"
-            text="Choose a doctor on the left to load their day. A doctor account opens on its own schedule."
-          />
-        ) : slots.isError ? (
-          <ErrorMessage message={slots.error.message} onRetry={slots.refetch} />
-        ) : slots.isPending ? (
-          <div className="space-y-6">
-            <Skeleton className="h-4 w-64" />
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
-              {Array.from({ length: 12 }).map((_, index) => (
-                <Skeleton key={index} className="h-14 w-full" />
-              ))}
-            </div>
-          </div>
-        ) : !workingDay ? (
-          <EmptyState
-            icon={CalendarX2}
-            title={`${doctor.name} does not work on this day`}
-            text={`${formatDateLong(date)} is not in this doctor's weekly schedule. Pick another day in the filters.`}
-          />
-        ) : gridSlots.length === 0 ? (
-          // a working day always generates a grid, so this is the honest answer for the odd schedule that
-          // produces no whole slot rather than a claim about the doctor's week
-          <EmptyState
-            icon={CalendarX2}
-            title="No slots on this day"
-            text={`${doctor.name} has no slot that fits their ${pluralize(doctor.slotDurationMinutes, 'minute')} sessions on ${formatDateLong(date)}.`}
-          />
-        ) : (
-          <SlotGrid
-            slots={gridSlots}
-            bookedByStart={bookedByStart}
-            canBook={canBook}
-            selectedStart={selectedStart}
-            onSelect={handleSelectSlot}
-          />
-        )}
+        <BoardBody
+          doctor={doctor}
+          doctorId={doctorId}
+          date={date}
+          slots={slots}
+          gridSlots={gridSlots}
+          bookedByStart={bookedByStart}
+          canBook={canBook}
+          workingDay={workingDay}
+          selectedStart={selectedStart}
+          onSelect={handleSelectSlot}
+        />
       </Card>
 
       {selectedSlot && doctor ? (
@@ -255,6 +215,97 @@ export default function SchedulerPage() {
           onBooked={afterBooking}
         />
       ) : null}
+    </div>
+  );
+}
+
+function boardSubtitle({ doctor, date }) {
+  if (!doctor) {
+    return 'Pick a doctor to see their slots';
+  }
+
+  const parts = [doctor.department.name, `${pluralize(doctor.slotDurationMinutes, 'minute')} slots`];
+
+  if (date) {
+    parts.push(formatDateLong(date));
+  }
+
+  return parts.join(' · ');
+}
+
+// The grid is one of six things the board can be showing, which reads better as small returns than as
+// one chain of ternaries.
+function BoardBody({ doctor, doctorId, date, slots, gridSlots, bookedByStart, canBook, workingDay, selectedStart, onSelect }) {
+  if (!doctorId) {
+    return (
+      <EmptyState
+        icon={Stethoscope}
+        title="No doctor selected"
+        text="Choose a doctor on the left to load their day. A doctor account opens on its own schedule."
+      />
+    );
+  }
+
+  if (slots.isError) {
+    return <ErrorMessage message={slots.error.message} onRetry={slots.refetch} />;
+  }
+
+  if (slots.isPending) {
+    return <BoardSkeleton />;
+  }
+
+  if (!workingDay) {
+    return (
+      <EmptyState
+        icon={CalendarX2}
+        title={`${doctor.name} does not work on this day`}
+        text={`${formatDateLong(date)} is not in this doctor's weekly schedule. Pick another day in the filters.`}
+      />
+    );
+  }
+
+  if (gridSlots.length === 0) {
+    // a working day always generates a grid, so this is the honest answer for the odd schedule that
+    // produces no whole slot rather than a claim about the doctor's week
+    return (
+      <EmptyState
+        icon={CalendarX2}
+        title="No slots on this day"
+        text={`${doctor.name} has no slot that fits their ${pluralize(doctor.slotDurationMinutes, 'minute')} sessions on ${formatDateLong(date)}.`}
+      />
+    );
+  }
+
+  return (
+    <SlotGrid
+      slots={gridSlots}
+      bookedByStart={bookedByStart}
+      canBook={canBook}
+      selectedStart={selectedStart}
+      onSelect={onSelect}
+    />
+  );
+}
+
+function FiltersSkeleton() {
+  return (
+    <div className="space-y-3">
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-32 w-full" />
+    </div>
+  );
+}
+
+function BoardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <Skeleton className="h-4 w-64" />
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+        {Array.from({ length: 12 }).map((_, index) => (
+          <Skeleton key={index} className="h-14 w-full" />
+        ))}
+      </div>
     </div>
   );
 }

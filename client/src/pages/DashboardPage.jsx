@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ErrorMessage from '@/components/ui/ErrorMessage';
@@ -32,11 +33,13 @@ const TREND_RANGES = [
 
 // the same three broadcasts the appointments page listens to, so the board is as live as the lists
 const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointment:cancelled'];
+// how many of the selected day's visits the card lists before sending the reader to the full list
+const DAY_ROWS = 10;
 
 // The board is read only: the counts, the trend, the calendar month, the day under the calendar and the
-// waiting room all come from the api, so nothing here is computed that the server already knows. What
-// the board contains follows the role. A doctor gets their own next patient first and then their own
-// queue, the desk gets the waiting room, and a super admin also gets today broken down per doctor.
+// waiting room all come from the api. What it contains follows the role. A doctor gets their own next
+// patient first and then their own queue, the desk gets the waiting room, and a super admin also gets
+// today broken down per doctor.
 export default function DashboardPage() {
   useDocumentTitle('Dashboard');
 
@@ -49,8 +52,7 @@ export default function DashboardPage() {
   const [selectedDate, setSelectedDate] = useState(null);
 
   const isDoctor = user.role === ROLES.DOCTOR;
-  // both desk roles work the same waiting room, which is why the card follows the desk rather than one
-  // role, and a doctor is the only one who does not get it
+  // both desk roles work the same waiting room, and a doctor is the only one who does not get it
   const isDesk = !isDoctor;
 
   const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: getDashboard });
@@ -73,21 +75,22 @@ export default function DashboardPage() {
 
   const day = useQuery({
     queryKey: ['appointments', 'day', selectedDay],
-    queryFn: () => listAppointments({ dateFrom: selectedDay, dateTo: selectedDay, limit: 10, sortBy: 'startTime' }),
+    queryFn: () => listAppointments({ dateFrom: selectedDay, dateTo: selectedDay, limit: DAY_ROWS, sortBy: 'startTime' }),
     enabled: Boolean(selectedDay),
   });
 
   // the desk's live list: everyone marked arrived today who has not been completed
   const waiting = useQuery({
     queryKey: ['dashboard', 'waiting', today],
-    queryFn: () => listAppointments({ dateFrom: today, dateTo: today, status: APPOINTMENT_STATUS.ARRIVED, limit: 50, sortBy: 'startTime' }),
+    queryFn: () =>
+      listAppointments({ dateFrom: today, dateTo: today, status: APPOINTMENT_STATUS.ARRIVED, limit: 50, sortBy: 'startTime' }),
     enabled: Boolean(today) && isDesk,
   });
 
   // a doctor already gets their own counts from the dashboard, so only the desk fetches the register
   const doctors = useQuery({ queryKey: ['doctors'], queryFn: () => listDoctors(), enabled: isDesk });
 
-  // Live: any appointment the caller is allowed to see wakes the board, so an arrival shows up on the
+  // Live: any appointment this caller is allowed to see wakes the board, so an arrival shows up in the
   // waiting room without anyone reloading the page.
   useEffect(() => {
     if (!socket) {
@@ -129,9 +132,7 @@ export default function DashboardPage() {
       </header>
 
       {/* the one card that comes before the numbers, because it is the thing to act on right now */}
-      {isDoctor ? (
-        <NextPatientCard next={dashboard.data?.next} today={today} isLoading={dashboard.isLoading} now={now} />
-      ) : null}
+      {isDoctor ? <NextPatientCard next={dashboard.data?.next} today={today} isLoading={dashboard.isLoading} now={now} /> : null}
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
         {STAT_CARDS.map(({ key, label, icon, tone }) => (
@@ -185,20 +186,17 @@ export default function DashboardPage() {
           </Card>
 
           <Card
-            title={isDoctor ? 'My queue' : selectedDay === today ? 'Your patients today' : `Appointments on ${formatDate(selectedDay)}`}
-            subtitle={
-              isDayLoading
-                ? 'Reading the day'
-                : `${pluralize(dayTotal, 'visit')} booked${
-                    selectedDay === today ? ' for today' : ` on ${formatDate(selectedDay)}`
-                  }${appointments.length < dayTotal ? ` · showing the first ${appointments.length}` : ''}`
-            }
+            title={dayCardTitle({ isDoctor, selectedDay, today })}
+            subtitle={dayCardSubtitle({ isDayLoading, dayTotal, selectedDay, today, shown: appointments.length })}
             action={
-              selectedDay !== today && today ? (
-                <Button size="sm" variant="secondary" onClick={() => setSelectedDate(today)}>
-                  Back to today
-                </Button>
-              ) : null
+              <div className="flex items-center gap-2">
+                {today && selectedDay !== today ? (
+                  <Button size="sm" variant="secondary" onClick={() => setSelectedDate(today)}>
+                    Back to today
+                  </Button>
+                ) : null}
+                {selectedDay ? <ViewAllLink date={selectedDay} /> : null}
+              </div>
             }
           >
             <DayList
@@ -224,12 +222,7 @@ export default function DashboardPage() {
                 <Skeleton className="h-32 w-full" />
               </div>
             ) : (
-              <MiniCalendar
-                selectedDate={selectedDay}
-                today={today}
-                counts={dayCounts}
-                onSelect={setSelectedDate}
-              />
+              <MiniCalendar selectedDate={selectedDay} today={today} counts={dayCounts} onSelect={setSelectedDate} />
             )}
           </Card>
 
@@ -247,5 +240,40 @@ export default function DashboardPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function dayCardTitle({ isDoctor, selectedDay, today }) {
+  if (isDoctor) {
+    return 'My queue';
+  }
+
+  if (selectedDay === today) {
+    return 'Your patients today';
+  }
+
+  return `Appointments on ${formatDate(selectedDay)}`;
+}
+
+function dayCardSubtitle({ isDayLoading, dayTotal, selectedDay, today, shown }) {
+  if (isDayLoading) {
+    return 'Reading the day';
+  }
+
+  const when = selectedDay === today ? ' for today' : ` on ${formatDate(selectedDay)}`;
+  const truncated = shown < dayTotal ? ` · showing the first ${shown}` : '';
+
+  return `${pluralize(dayTotal, 'visit')} booked${when}${truncated}`;
+}
+
+// the day card lists the first page of a busy day, so the rest is one click away in the full list
+function ViewAllLink({ date }) {
+  return (
+    <Link
+      to={`/appointments?dateFrom=${date}&dateTo=${date}`}
+      className="inline-flex items-center rounded-pill bg-primary-tint px-4 py-2 text-xs font-semibold text-primary transition hover:bg-primary-tint/70"
+    >
+      View all
+    </Link>
   );
 }

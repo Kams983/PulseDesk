@@ -54,14 +54,11 @@ export default function AppointmentDetailsModal({ appointment, departmentName, t
             }`}
           />
         ) : null}
-        {appointment.status === APPOINTMENT_STATUS.ARRIVED || appointment.status === APPOINTMENT_STATUS.COMPLETED ? (
+        {isSeen(appointment.status) ? (
           <Field
             className="sm:col-span-2"
             label={appointment.status === APPOINTMENT_STATUS.COMPLETED ? 'Arrived and completed' : 'Arrived'}
-            value={[appointment.arrivedAt, appointment.completedAt]
-              .filter(Boolean)
-              .map(formatStampTime)
-              .join(' → ')}
+            value={[appointment.arrivedAt, appointment.completedAt].filter(Boolean).map(formatStampTime).join(' → ')}
           />
         ) : null}
       </dl>
@@ -72,38 +69,7 @@ export default function AppointmentDetailsModal({ appointment, departmentName, t
           Patient
         </h3>
 
-        {patient.isError ? (
-          <p className="mt-2 text-sm text-ink-muted">{patient.error.message}</p>
-        ) : patient.isLoading ? (
-          <div className="mt-3 space-y-2">
-            <Skeleton className="h-4 w-40" />
-            <Skeleton className="h-4 w-28" />
-          </div>
-        ) : (
-          <div className="mt-3 flex items-center gap-3">
-            <Avatar name={patient.data.name} size="lg" />
-            <dl className="grid flex-1 gap-1 text-sm sm:grid-cols-2">
-              <div>
-                <dt className="text-xs text-ink-muted">Name</dt>
-                <dd className="font-medium text-ink">{patient.data.name}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-ink-muted">Patient code</dt>
-                <dd className="font-medium text-ink">{patient.data.patientCode}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-ink-muted">Mobile</dt>
-                <dd className="font-medium text-ink">{patient.data.mobile}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-ink-muted">Date of birth</dt>
-                <dd className="font-medium text-ink">
-                  {patient.data.dateOfBirth ? formatDateLong(patient.data.dateOfBirth) : 'Not recorded'}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        )}
+        <PatientBlock patient={patient} />
       </section>
 
       <p className="mt-4 flex items-center gap-2 text-xs text-ink-muted">
@@ -111,6 +77,50 @@ export default function AppointmentDetailsModal({ appointment, departmentName, t
         The clinic's date is {formatDateLong(today)}.
       </p>
     </Modal>
+  );
+}
+
+// a visit that has been seen is either still with the doctor or finished
+function isSeen(status) {
+  return status === APPOINTMENT_STATUS.ARRIVED || status === APPOINTMENT_STATUS.COMPLETED;
+}
+
+function PatientBlock({ patient }) {
+  if (patient.isError) {
+    return <p className="mt-2 text-sm text-ink-muted">{patient.error.message}</p>;
+  }
+
+  if (patient.isLoading) {
+    return (
+      <div className="mt-3 space-y-2">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-4 w-28" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 flex items-center gap-3">
+      <Avatar name={patient.data.name} size="lg" />
+      <dl className="grid flex-1 gap-1 text-sm sm:grid-cols-2">
+        <div>
+          <dt className="text-xs text-ink-muted">Name</dt>
+          <dd className="font-medium text-ink">{patient.data.name}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-ink-muted">Patient code</dt>
+          <dd className="font-medium text-ink">{patient.data.patientCode}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-ink-muted">Mobile</dt>
+          <dd className="font-medium text-ink">{patient.data.mobile}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-ink-muted">Date of birth</dt>
+          <dd className="font-medium text-ink">{patient.data.dateOfBirth ? formatDateLong(patient.data.dateOfBirth) : 'Not recorded'}</dd>
+        </div>
+      </dl>
+    </div>
   );
 }
 
