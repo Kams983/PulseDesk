@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ClipboardList } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
@@ -28,9 +28,7 @@ import { pluralize } from '@/utils/formatters';
 const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointment:cancelled'];
 const PAGE_SIZES = [10, 20, 50];
 
-// The URL is the state. Every filter, the sort and the page live in the query string, which is what makes
-// a refresh, a bookmark and a link to a colleague all land on the same list, and it means the page has
-// exactly one place to read its own configuration from.
+// The URL is the state, so a refresh, a bookmark and a link to a colleague all land on the same list.
 function readFilters(params) {
   const limit = Number(params.get('limit'));
 
@@ -69,8 +67,7 @@ export default function AppointmentsPage() {
   const today = board.data?.today;
 
   const departments = useQuery({ queryKey: ['departments'], queryFn: listDepartments, staleTime: 30 * 60_000 });
-  // the doctor select wants every doctor, which is the same query the scheduler's "all departments" view
-  // already caches, so the two screens share one entry instead of asking twice
+  // the same query the scheduler's "all departments" view caches, so the two screens share one entry
   const doctors = useQuery({ queryKey: ['doctors', ''], queryFn: () => listDoctors() });
 
   const list = useQuery({
@@ -82,69 +79,54 @@ export default function AppointmentsPage() {
 
   const appointments = list.data?.appointments || [];
   const meta = list.data?.meta;
+  const departmentNames = new Map((departments.data || []).map((entry) => [entry.id, entry.name]));
+  const selected = active ? appointments.find((appointment) => appointment.id === active.id) || null : null;
 
-  const departmentNames = useMemo(() => new Map((departments.data || []).map((d) => [d.id, d.name])), [departments.data]);
-
-  const closeActive = useCallback(() => setActive(null), []);
-
-  const selected = useMemo(
-    () => (active ? appointments.find((appointment) => appointment.id === active.id) || null : null),
-    [active, appointments]
-  );
-
-  // one entry point for both filters and the shortcuts; a changed filter always goes back to page one,
+  // one entry point for the filters and the shortcuts; a changed filter always goes back to page one,
   // because page four of the old result set is not a place the new one has
-  const applyFilters = useCallback(
-    (patch) => {
-      setParams(
-        (current) => {
-          const next = new URLSearchParams(current);
+  function applyFilters(patch) {
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
 
-          for (const [key, value] of Object.entries(patch)) {
-            if (value === '' || value === undefined || value === null) {
-              next.delete(key);
-            } else {
-              next.set(key, String(value));
-            }
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === '' || value === undefined || value === null) {
+            next.delete(key);
+          } else {
+            next.set(key, String(value));
           }
+        }
 
-          if (!('page' in patch)) {
-            next.delete('page');
-          }
-
-          return next;
-        },
-        { replace: true }
-      );
-    },
-    [setParams]
-  );
-
-  const clearFilters = useCallback(() => setParams(new URLSearchParams(), { replace: true }), [setParams]);
-
-  const toggleSort = useCallback(
-    (key) => {
-      setParams(
-        (current) => {
-          const next = new URLSearchParams(current);
-          const isSame = (current.get('sortBy') || 'date') === key;
-
-          next.set('sortBy', key);
-          // clicking the column that is already sorted flips the direction, which is what an arrow implies
-          next.set('sortOrder', isSame && (current.get('sortOrder') || 'asc') === 'asc' ? 'desc' : 'asc');
+        if (!('page' in patch)) {
           next.delete('page');
+        }
 
-          return next;
-        },
-        { replace: true }
-      );
-    },
-    [setParams]
-  );
+        return next;
+      },
+      { replace: true }
+    );
+  }
 
-  const goToPage = useCallback((nextPage) => applyFilters({ page: nextPage }), [applyFilters]);
+  function clearFilters() {
+    setParams(new URLSearchParams(), { replace: true });
+  }
 
-  const changePageSize = useCallback((size) => applyFilters({ limit: size, page: 1 }), [applyFilters]);
+  function toggleSort(key) {
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        const isSame = (current.get('sortBy') || 'date') === key;
+
+        next.set('sortBy', key);
+        // clicking the column that is already sorted flips the direction, which is what an arrow implies
+        next.set('sortOrder', isSame && (current.get('sortOrder') || 'asc') === 'asc' ? 'desc' : 'asc');
+        next.delete('page');
+
+        return next;
+      },
+      { replace: true }
+    );
+  }
 
   const arriveMutation = useMutation({
     mutationFn: (id) => arriveAppointment(id),
@@ -168,13 +150,11 @@ export default function AppointmentsPage() {
     onError: (error) => toast.error(error.message),
   });
 
-  // react-query documents mutate as stable, so destructuring it here is what makes the callback below
-  // depend on something that never changes
   const { mutate: markArrived } = arriveMutation;
   const { mutate: completeVisit } = completeMutation;
 
-  // Live: the server broadcasts to the staff room and to each doctor's own room, so every list is woken
-  // by any change it is allowed to see, and refetching the current query is exactly what it needs.
+  // the server broadcasts to the staff room and to each doctor's own room, so refetching the current
+  // query is what every list needs on any change it is allowed to see
   useEffect(() => {
     if (!socket) {
       return undefined;
@@ -191,9 +171,8 @@ export default function AppointmentsPage() {
   }, [socket, queryClient]);
 
   // The table and the card list both hand their clicks through here, so the two layouts cannot drift
-  // apart in what an action means. Two of the five run immediately and three open a dialog, which is a
-  // decision this one function owns. Mutation objects are stable in react-query, so this callback is too
-  // and a memoised row can be skipped while a filter is being typed.
+  // apart. Two of the five actions run at once and three open a dialog. Kept stable so a memoised row
+  // is skipped while a filter is being typed.
   const runAction = useCallback(
     (action, id) => {
       if (action === 'arrive') {
@@ -258,7 +237,7 @@ export default function AppointmentsPage() {
           />
         ) : (
           <>
-            {/* one layout is rendered, not both: the other one would be rows of dom that nobody sees */}
+            {/* one layout is rendered, not both: the other would be rows of dom that nobody sees */}
             {isWide ? (
               <AppointmentsTable
                 appointments={appointments}
@@ -286,9 +265,9 @@ export default function AppointmentsPage() {
                 className="mt-4 border-t border-line pt-4"
                 page={meta.page}
                 totalPages={meta.totalPages}
-                onChange={goToPage}
+                onChange={(nextPage) => applyFilters({ page: nextPage })}
                 pageSize={meta.limit}
-                onPageSizeChange={changePageSize}
+                onPageSizeChange={(size) => applyFilters({ limit: size, page: 1 })}
                 pageSizeOptions={PAGE_SIZES}
               />
             ) : null}
@@ -301,16 +280,16 @@ export default function AppointmentsPage() {
           appointment={selected}
           departmentName={departmentNames.get(selected.departmentId)}
           today={today}
-          onClose={closeActive}
+          onClose={() => setActive(null)}
         />
       ) : null}
 
       {selected && active?.action === 'edit' ? (
-        <EditAppointmentModal appointment={selected} onClose={closeActive} onSaved={closeActive} />
+        <EditAppointmentModal appointment={selected} onClose={() => setActive(null)} onSaved={() => setActive(null)} />
       ) : null}
 
       {selected && active?.action === 'cancel' ? (
-        <CancelAppointmentModal appointment={selected} onClose={closeActive} onCancelled={closeActive} />
+        <CancelAppointmentModal appointment={selected} onClose={() => setActive(null)} onCancelled={() => setActive(null)} />
       ) : null}
     </div>
   );

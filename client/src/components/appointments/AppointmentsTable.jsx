@@ -1,12 +1,11 @@
-import { memo } from 'react';
 import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react';
 import AppointmentRow from './AppointmentRow';
 import Skeleton from '@/components/ui/Skeleton';
 import { availableActions } from '@/utils/appointmentActions';
 
-// the two columns the api can sort by, in the order they appear. The rest of the header is static: a
-// sort the server refuses to honour would be a click that does nothing.
-const SORTABLE = [
+// The two sortable columns the api accepts, in the order they appear. The rest of the header is static:
+// a sort the server refuses to honour would be a click that does nothing.
+const COLUMNS = [
   { key: 'date', label: 'Date' },
   { key: 'startTime', label: 'Time' },
   { key: null, label: 'Patient' },
@@ -18,9 +17,17 @@ const SORTABLE = [
   { key: null, label: 'Actions', align: 'right' },
 ];
 
-// Memoised with the rows it owns: the page re-renders while a filter is typed and on every page of
-// results, and none of that changes the table when the data, the sort and the role are the same.
-function AppointmentsTable({ appointments, departmentNames, sortBy, sortOrder, role, today, isFetching, onSort, onRun }) {
+export default function AppointmentsTable({
+  appointments,
+  departmentNames,
+  sortBy,
+  sortOrder,
+  role,
+  today,
+  isFetching,
+  onSort,
+  onRun,
+}) {
   if (isFetching && appointments.length === 0) {
     return (
       <div className="space-y-2">
@@ -36,40 +43,9 @@ function AppointmentsTable({ appointments, departmentNames, sortBy, sortOrder, r
       <table className="w-full min-w-[64rem] border-collapse text-left">
         <thead>
           <tr className="border-b border-line">
-            {SORTABLE.map(({ key, label, align }) => {
-              const isActive = key && key === sortBy;
-
-              return (
-                <th
-                  key={label}
-                  scope="col"
-                  className={`px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted ${align === 'right' ? 'text-right' : ''}`}
-                >
-                  {key ? (
-                    // a real button, so the header is reachable and announced by a keyboard and a reader
-                    <button
-                      type="button"
-                      onClick={() => onSort(key)}
-                      aria-label={`Sort by ${label}`}
-                      className={`inline-flex items-center gap-1 uppercase transition hover:text-ink ${isActive ? 'text-ink' : ''}`}
-                    >
-                      {label}
-                      {isActive ? (
-                        sortOrder === 'asc' ? (
-                          <ArrowUp size={13} aria-hidden="true" />
-                        ) : (
-                          <ArrowDown size={13} aria-hidden="true" />
-                        )
-                      ) : (
-                        <ChevronsUpDown size={13} className="opacity-50" aria-hidden="true" />
-                      )}
-                    </button>
-                  ) : (
-                    label
-                  )}
-                </th>
-              );
-            })}
+            {COLUMNS.map((column) => (
+              <TableHead key={column.label} column={column} sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} />
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -84,8 +60,8 @@ function AppointmentsTable({ appointments, departmentNames, sortBy, sortOrder, r
               patientCode={appointment.patient.patientCode}
               mobile={appointment.patient.mobile}
               doctorName={appointment.doctor.name}
-              // an appointment carries a department id and nothing else, so the name comes from the one
-              // department list the page already holds rather than a second request per row
+              // an appointment carries a department id only, so the name comes from the one department
+              // list the page already holds rather than a request per row
               departmentName={departmentNames.get(appointment.departmentId) || '-'}
               purpose={appointment.purpose}
               status={appointment.status}
@@ -99,4 +75,41 @@ function AppointmentsTable({ appointments, departmentNames, sortBy, sortOrder, r
   );
 }
 
-export default memo(AppointmentsTable);
+// a real button, so the header is reachable and announced by a keyboard and a reader
+function TableHead({ column, sortBy, sortOrder, onSort }) {
+  const { key, label, align } = column;
+  const isActive = key && key === sortBy;
+
+  return (
+    <th
+      scope="col"
+      className={`px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted ${align === 'right' ? 'text-right' : ''}`}
+    >
+      {key ? (
+        <button
+          type="button"
+          onClick={() => onSort(key)}
+          aria-label={`Sort by ${label}`}
+          className={`inline-flex items-center gap-1 uppercase transition hover:text-ink ${isActive ? 'text-ink' : ''}`}
+        >
+          {label}
+          <SortIcon isActive={isActive} sortOrder={sortOrder} />
+        </button>
+      ) : (
+        label
+      )}
+    </th>
+  );
+}
+
+function SortIcon({ isActive, sortOrder }) {
+  if (!isActive) {
+    return <ChevronsUpDown size={13} className="opacity-50" aria-hidden="true" />;
+  }
+
+  if (sortOrder === 'asc') {
+    return <ArrowUp size={13} aria-hidden="true" />;
+  }
+
+  return <ArrowDown size={13} aria-hidden="true" />;
+}

@@ -1,9 +1,6 @@
-import { memo } from 'react';
 import Skeleton from './Skeleton';
 
-// Memoised because the dashboard re-renders on every query it owns: five cards would each redraw on
-// each unrelated update, and their props are a label, a number and an icon that rarely change.
-function StatCard({ icon: Icon, label, value, tone = 'bg-primary-tint text-primary', isLoading = false }) {
+export default function StatCard({ icon: Icon, label, value, tone = 'bg-primary-tint text-primary', isLoading = false }) {
   return (
     <div className="rounded-card bg-card p-4 shadow-card sm:p-5">
       <div className="flex items-center gap-3">
@@ -18,5 +15,3 @@ function StatCard({ icon: Icon, label, value, tone = 'bg-primary-tint text-prima
     </div>
   );
 }
-
-export default memo(StatCard);
