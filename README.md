@@ -117,9 +117,10 @@ One sample document per main collection, with the fields that matter:
   doctorSnapshot: { name: "Dr. Ifeanyi Okafor", nameLower: "dr. ifeanyi okafor" },
   createdBy, arrivedAt: ISODate, completedAt: undefined, cancelledAt: undefined, cancelReason: undefined }
 
-// auditlogs
+// auditlogs (metadata carries what the action changed: a cancel records the status it came from and the
+// reason, an arrival records the date and the time of the visit)
 { _id, userId, role: "receptionist", action: "APPOINTMENT_ARRIVED", entity: "Appointment",
-  entityId, metadata: { from: "scheduled", to: "arrived" }, ip: "127.0.0.1" }
+  entityId, metadata: { date: "2026-10-16", startTime: "09:00" }, ip: "127.0.0.1" }
 ```
 
 Indexes, and the reason for each, are tabulated in [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md#indexes-and-why). The one that matters most is the partial unique index on `{ doctorId, date, startTime }` over the active statuses: it is the double booking guard.
@@ -132,7 +133,7 @@ Base path `/api/v1`. Every response is `{ success, message, data, meta }`; error
 
 | Method | Path | Roles | Description |
 | --- | --- | --- | --- |
-| GET | `/health` | public | liveness plus database state |
+| GET | `/health` | public | liveness, returning `status` and `uptime` |
 | POST | `/auth/login` | public | strict rate limiter, returns the access token and sets the refresh cookie |
 | POST | `/auth/refresh` | refresh cookie | rotates the pair, the used token is deleted |
 | POST | `/auth/logout` | refresh cookie | clears the cookie, always succeeds |
@@ -393,7 +394,7 @@ The API is on http://localhost:5000 (its health check is what the API and client
 docker compose exec server npm run seed
 ```
 
-Docker is not required for anything else. The compose file was written and its YAML was parsed, but it was not executed on the machine this was built on, which had no Docker installed; the two `npm run dev` terminals above are the path that was actually run and verified.
+**Not verified:** the compose stack was never run, because the machine this was built on has no Docker daemon installed. The files are written and their YAML parses, but nothing here has started the containers. Docker is not required for anything else, and the two `npm run dev` terminals above are the path that was actually run and verified.
 
 ## Testing
 
