@@ -1,7 +1,6 @@
 // Rebuilds the demo clinic from scripts/seedData.js, positioned around the clinic's today so the data
-// never goes stale. Nothing about a person, a department or a purpose is written here: this file only
-// knows how to turn the facts in seedData.js into rows. Every generation rule below carries a one line
-// comment saying what it is for.
+// never goes stale. This file only knows how to turn facts into rows; every person, department and
+// purpose lives in the data file.
 const mongoose = require('mongoose');
 const { DateTime } = require('luxon');
 
@@ -21,18 +20,17 @@ const { User, RefreshToken, Department, Doctor, Patient, Appointment, AuditLog }
 const PAST_DAYS = 21;
 const FUTURE_DAYS = 10;
 const SHOWCASE_BUSYNESS = 0.95;
-// The one name this file is allowed to mention, because the rule is about this doctor: his next working
-// day is the grid a reviewer opens first. The data file carries people, not a "featured" flag.
+// the one account this file mentions by name, because the rule is about that doctor's next working day
 const SHOWCASE_DOCTOR = 'dr.adeyemi@emr.test';
 // a fixed seed, so two runs on the same day build the same clinic and a bug can be reproduced
 const PRNG_SEED = 20261016;
-// how many cancelled slots also get a later active booking, which is what shows the partial index working
+// how many cancelled slots also get a later active booking, which shows the partial index working
 const ROOM_FOR_REBOOKING = 5;
 
-// which departments each demo patient usually attends, keyed the way a patient is uniquely identified
+// which departments each demo patient usually attends, keyed by mobile
 const DEPT_CODES_BY_MOBILE = new Map(seedData.patients.map((spec) => [spec.mobile, spec.deptCodes]));
 
-// mulberry32, the smallest PRNG that is honestly reproducible: same seed, same sequence of numbers
+// mulberry32, the smallest random generator that is honestly reproducible: same seed, same numbers
 function mulberry32(seed) {
   let state = seed >>> 0;
 
@@ -75,7 +73,7 @@ function shuffle(list) {
   return copy;
 }
 
-// A clinic-local wall clock time as a real instant, which is what the timestamps on a row need.
+// A clinic wall clock time as a real instant, which is what the timestamps on a row need.
 function atClinicTime(date, time) {
   return DateTime.fromISO(`${date}T${time}`, { zone: env.clinicTimezone });
 }
@@ -96,8 +94,8 @@ async function main() {
 
   console.log('seed: wiping every demo collection');
   await wipe();
-  // indexes are built after the wipe and before any insert, because the partial unique index that
-  // prevents a double booking is exactly what the rebooked slot below is meant to demonstrate
+  // indexes are built after the wipe and before any insert, so the partial unique index that prevents a
+  // double booking exists while the rebooked slot below is written
   await buildIndexes();
 
   const users = await createUsers();
@@ -108,13 +106,12 @@ async function main() {
   const appointments = await createAppointments(doctors, patients, users.receptionists);
   const auditRows = await createAuditLogs(users, appointments);
 
-  await printSummary(doctors, appointments, patients, auditRows);
+  await printSummary({ doctors, appointments, patients, auditRows });
 
   await mongoose.disconnect();
 }
 
-// A seed run deletes everything it can reach, so a production database is refused unless the operator
-// says so explicitly rather than by habit.
+// A seed run deletes everything it can reach, so a production database needs an explicit --force
 function refuseInProduction() {
   if (env.nodeEnv !== 'production' || process.argv.includes('--force')) {
     return;
@@ -141,8 +138,8 @@ async function wipe() {
 
 async function buildIndexes() {
   for (const model of Object.values(models)) {
-    // including counters and TTL indexes: every constraint the api runs against exists before the
-    // first insert, otherwise the seed would happily write data the api would have rejected
+    // every constraint the api runs against exists before the first insert, otherwise the seed would
+    // happily write data the api would have rejected
     await model.syncIndexes();
   }
 }
@@ -175,7 +172,7 @@ async function createDoctors(users, departments) {
   const documents = seedData.doctors.map((spec) => ({
     userId: users.doctors.get(spec.email)._id,
     departmentId: departments.get(spec.deptCode)._id,
-    // stored without the title so a name search on the given name finds them, the ui adds "Dr."
+    // stored without the title so a search on the given name finds them, the ui adds "Dr."
     name: spec.name,
     nameLower: spec.name.toLowerCase(),
     specialization: spec.specialization,
@@ -185,8 +182,8 @@ async function createDoctors(users, departments) {
 
   const doctors = await Doctor.insertMany(documents);
 
-  // busyness and deptCode are facts about the demo, not about a doctor, so they are kept beside the
-  // document instead of being written into a model that has no column for them
+  // busyness and deptCode are facts about the demo, not columns on a doctor, so they are kept beside the
+  // document rather than written into a model that has no field for them
   return doctors.map((doctor, index) => ({ doctor, spec: seedData.doctors[index] }));
 }
 
@@ -195,7 +192,7 @@ async function createPatients(receptionists) {
   const registered = currentUserIds(receptionists);
 
   for (const spec of seedData.patients) {
-    // one at a time: each patient needs its own sequential code from the counter the booking api also uses
+    // one at a time: each patient needs its own code from the counter the booking api also uses
     const patientCode = await patientService.nextPatientCode();
     const createdAt = nowInClinicTz().minus({ days: randInt(5, 120), hours: randInt(0, 20) });
 
@@ -222,88 +219,98 @@ async function createAppointments(doctors, patients, receptionists) {
   const clinicNow = nowInClinicTz();
   const today = clinicNow.startOf('day').toISODate();
   const registered = currentUserIds(receptionists);
-  // each booking keeps the demo facts beside it, because busyness and deptCode are not columns on a doctor
   const booked = [];
   // who has been seen by this doctor before, so a returning patient can come back
   const seenBy = new Map();
 
   for (const { doctor, spec } of doctors) {
-    const showcaseDay = nextWorkingDay(spec, clinicNow);
-
-    for (let offset = -PAST_DAYS; offset <= FUTURE_DAYS; offset += 1) {
-      const day = clinicNow.startOf('day').plus({ days: offset });
-      const date = day.toISODate();
-      const workingDay = scheduleFor(spec, day.weekday);
-
-      // the doctor does not work that weekday, so the day contributes nothing at all
-      if (!workingDay) {
-        continue;
-      }
-
-      // the real generator builds the grid, so the seed can only ever book times the api would accept
-      const slots = generateSlots({
-        sessions: workingDay.sessions,
-        breaks: workingDay.breaks,
-        slotDurationMinutes: doctor.slotDurationMinutes,
-      });
-
-      if (slots.length === 0) {
-        continue;
-      }
-
-      const isShowcase = date === showcaseDay;
-      const target = isShowcase
-        ? Math.round(slots.length * SHOWCASE_BUSYNESS)
-        : Math.round(slots.length * spec.busyness * (0.85 + random() * 0.3));
-
-      for (const slot of takeSlots(slots, target)) {
-        const dayStart = atClinicTime(date, '00:00');
-        // a patient has to have been registered before the day of the visit, or the booking would
-        // predate the person it belongs to
-        const pool = patients.filter(
-          (patient) => patientBelongsTo(patient, spec.deptCode) && patient.createdAt < dayStart.toJSDate()
-        );
-
-        if (pool.length === 0) {
-          continue;
-        }
-
-        const patient = pickPatient(pool, seenBy, doctor);
-        const status = statusFor({ date, today, isShowcase, slot, clinicNow });
-        const stamps = timestampsFor({ status, date, slot, clinicNow });
-
-        const row = {
-          patientId: patient._id,
-          doctorId: doctor._id,
-          departmentId: doctor.departmentId,
-          date,
-          startTime: slot.startTime,
-          endTime: slot.endTime,
-          status,
-          purpose: pick(seedData.purposesByDept[spec.deptCode]),
-          // about one visit in four carries a note, the way a real diary looks
-          ...(chance(0.25) ? { notes: pick(seedData.sampleNotes) } : {}),
-          ...snapshot(doctor, patient),
-          createdBy: pick(registered),
-          createdAt: bookedAt({ date, patient, clinicNow }).toJSDate(),
-          ...stamps,
-        };
-
-        booked.push({ row, doctor, spec, date, slot });
-      }
-    }
+    collectDoctorBookings({ doctor, spec, patients, registered, booked, seenBy, clinicNow, today });
   }
 
-  // the desk cancels a couple of still-pending bookings today, which is both how a real board looks
-  // and what leaves a visible free slot behind
+  // the desk cancels a couple of still pending bookings today, which is both how a real board looks and
+  // what leaves a visible free slot behind
   cancelTodaysBookings(booked, today, clinicNow);
 
   const cancelled = booked.filter((entry) => entry.row.status === APPOINTMENT_STATUS.CANCELLED);
-  const rebooked = rebookCancelledSlots(cancelled, patients, receptionists, clinicNow);
+  const rebooked = rebookCancelledSlots({ cancelled, patients, receptionists, clinicNow });
   const rows = booked.map((entry) => entry.row);
 
   // mongoose drops the keys a status does not use, so one shape can describe every row
   return Appointment.insertMany([...rows, ...rebooked]);
+}
+
+function collectDoctorBookings({ doctor, spec, patients, registered, booked, seenBy, clinicNow, today }) {
+  const showcaseDay = nextWorkingDay(spec, clinicNow);
+
+  for (let offset = -PAST_DAYS; offset <= FUTURE_DAYS; offset += 1) {
+    const day = clinicNow.startOf('day').plus({ days: offset });
+    const date = day.toISODate();
+    const workingDay = scheduleFor(spec, day.weekday);
+
+    // the doctor does not work that weekday, so the day contributes nothing at all
+    if (!workingDay) {
+      continue;
+    }
+
+    // the real generator builds the grid, so the seed can only ever book times the api would accept
+    const slots = generateSlots({
+      sessions: workingDay.sessions,
+      breaks: workingDay.breaks,
+      slotDurationMinutes: doctor.slotDurationMinutes,
+    });
+
+    if (slots.length === 0) {
+      continue;
+    }
+
+    const isShowcase = date === showcaseDay;
+    const target = isShowcase
+      ? Math.round(slots.length * SHOWCASE_BUSYNESS)
+      : Math.round(slots.length * spec.busyness * (0.85 + random() * 0.3));
+
+    for (const slot of takeSlots(slots, target)) {
+      const row = bookingRow({ doctor, spec, patients, registered, seenBy, clinicNow, today, date, slot, isShowcase });
+
+      if (row) {
+        booked.push({ row, doctor, spec, date, slot });
+      }
+    }
+  }
+}
+
+// one booking, or null when nobody in that department could be in the pool for that day
+function bookingRow({ doctor, spec, patients, registered, seenBy, clinicNow, today, date, slot, isShowcase }) {
+  const dayStart = atClinicTime(date, '00:00');
+  // a patient has to have been registered before the day of the visit, or the booking would predate the
+  // person it belongs to
+  const pool = patients.filter(
+    (patient) => patientBelongsTo(patient, spec.deptCode) && patient.createdAt < dayStart.toJSDate()
+  );
+
+  if (pool.length === 0) {
+    return null;
+  }
+
+  const patient = pickPatient(pool, seenBy, doctor);
+  const status = statusFor({ date, today, isShowcase, slot, clinicNow });
+  const stamps = timestampsFor({ status, date, slot, clinicNow });
+
+  return {
+    patientId: patient._id,
+    doctorId: doctor._id,
+    departmentId: doctor.departmentId,
+    date,
+    startTime: slot.startTime,
+    endTime: slot.endTime,
+    status,
+    purpose: pick(seedData.purposesByDept[spec.deptCode]),
+    // about one visit in four carries a note, the way a real diary looks
+    ...(chance(0.25) ? { notes: pick(seedData.sampleNotes) } : {}),
+    ...snapshot(doctor, patient),
+    createdBy: pick(registered),
+    createdAt: bookedAt({ date, patient, clinicNow }).toJSDate(),
+    ...stamps,
+  };
 }
 
 // Today is the one day a reviewer can watch change, so one or two of its bookings are cancelled with a
@@ -337,7 +344,7 @@ function patientBelongsTo(patient, deptCode) {
 }
 
 // A patient with a history with this doctor comes back about twice as often as a new one, which is how
-// a real appointment book fills up. The coin is flipped before the branch so the generator is drawn
+// a real appointment book fills up. The coin is flipped before the branch, so the generator is drawn
 // from the same number of times whatever the pool looks like.
 function pickPatient(pool, seenBy, doctor) {
   const key = doctor._id.toString();
@@ -351,13 +358,12 @@ function pickPatient(pool, seenBy, doctor) {
 }
 
 // A visit that has already happened is almost always completed, a future one is almost always still
-// scheduled, and today is decided by the clock rather than by the calendar. The roll is taken for every
-// row, even when the answer ignores it, so the seeded stream does not depend on what time it is.
+// scheduled, and today is decided by the clock. The roll is taken for every row, even when the answer
+// ignores it, so the seeded stream does not depend on what time it is.
 function statusFor({ date, today, isShowcase, slot, clinicNow }) {
   const roll = random();
 
-  // the showcase day keeps every booking it took, because it is the grid a reviewer opens first and it
-  // should be as full as the rate beside SHOWCASE_BUSYNESS says it is
+  // the showcase day keeps every booking it took, because it is the grid a reviewer opens first
   if (isShowcase) {
     return APPOINTMENT_STATUS.SCHEDULED;
   }
@@ -453,7 +459,7 @@ function nextWorkingDay(spec, clinicNow) {
 
 // A cancelled row leaves the partial index, so the same doctor and time can hold an active booking
 // again. Five of them get exactly that, which is the double booking rule made visible.
-function rebookCancelledSlots(cancelled, patients, receptionists, clinicNow) {
+function rebookCancelledSlots({ cancelled, patients, receptionists, clinicNow }) {
   const today = clinicNow.startOf('day').toISODate();
   // today and the days ahead first, so the rebooked visit is something the board can still show
   const candidates = [
@@ -472,26 +478,29 @@ function rebookCancelledSlots(cancelled, patients, receptionists, clinicNow) {
       continue;
     }
 
-    const patient = pick(pool);
-    const cancelledAt = DateTime.fromJSDate(entry.row.cancelledAt, { zone: env.clinicTimezone });
-
-    rows.push({
-      ...entry.row,
-      patientId: patient._id,
-      ...snapshot(entry.doctor, patient),
-      status: APPOINTMENT_STATUS.SCHEDULED,
-      purpose: pick(seedData.purposesByDept[entry.spec.deptCode]),
-      createdBy: pick(currentUserIds(receptionists)),
-      // booked after the cancellation that freed the time, and never in the future
-      createdAt: DateTime.min(cancelledAt.plus({ hours: randInt(1, 24) }), clinicNow.minus({ minutes: 15 })).toJSDate(),
-      arrivedAt: undefined,
-      completedAt: undefined,
-      cancelledAt: undefined,
-      cancelReason: undefined,
-    });
+    rows.push(rebookedRow({ entry, patient: pick(pool), receptionists, clinicNow }));
   }
 
   return rows;
+}
+
+function rebookedRow({ entry, patient, receptionists, clinicNow }) {
+  const cancelledAt = DateTime.fromJSDate(entry.row.cancelledAt, { zone: env.clinicTimezone });
+
+  return {
+    ...entry.row,
+    patientId: patient._id,
+    ...snapshot(entry.doctor, patient),
+    status: APPOINTMENT_STATUS.SCHEDULED,
+    purpose: pick(seedData.purposesByDept[entry.spec.deptCode]),
+    createdBy: pick(currentUserIds(receptionists)),
+    // booked after the cancellation that freed the time, and never in the future
+    createdAt: DateTime.min(cancelledAt.plus({ hours: randInt(1, 24) }), clinicNow.minus({ minutes: 15 })).toJSDate(),
+    arrivedAt: undefined,
+    completedAt: undefined,
+    cancelledAt: undefined,
+    cancelReason: undefined,
+  };
 }
 
 function snapshot(doctor, patient) {
@@ -509,9 +518,17 @@ function snapshot(doctor, patient) {
 async function createAuditLogs(users, appointments) {
   const clinicNow = nowInClinicTz();
   const staff = [users.admin, ...users.receptionists];
+  const rows = [...loginRows(staff, clinicNow), ...appointmentRows(appointments, staff, users)];
+
+  await AuditLog.insertMany(rows);
+
+  return rows.length;
+}
+
+// the desk signs in each morning, so the last week has a believable login trail
+function loginRows(staff, clinicNow) {
   const rows = [];
 
-  // the desk signs in each morning, so the last week has a believable login trail
   for (const user of staff) {
     for (let offset = 0; offset < 7; offset += 1) {
       const at = clinicNow.minus({ days: offset }).set({ hour: randInt(7, 9), minute: randInt(0, 59) });
@@ -532,7 +549,12 @@ async function createAuditLogs(users, appointments) {
     }
   }
 
+  return rows;
+}
+
+function appointmentRows(appointments, staff, users) {
   const staffById = new Map(staff.map((user) => [String(user._id), user]));
+  const rows = [];
 
   for (const appointment of appointments) {
     const actor = staffById.get(String(appointment.createdBy)) || users.receptionists[0];
@@ -556,9 +578,7 @@ async function createAuditLogs(users, appointments) {
     }
   }
 
-  await AuditLog.insertMany(rows);
-
-  return rows.length;
+  return rows;
 }
 
 function stateChangeRow(appointment, actor) {
@@ -600,23 +620,42 @@ function stateChangeRow(appointment, actor) {
   return null;
 }
 
-async function printSummary(doctors, appointments, patients, auditRows) {
+async function printSummary({ doctors, appointments, patients, auditRows }) {
   const today = nowInClinicTz().toISODate();
   const tomorrow = nowInClinicTz().plus({ days: 1 }).toISODate();
-  const counts = {
-    users: await User.countDocuments({}),
-    departments: await Department.countDocuments({}),
-    doctors: await Doctor.countDocuments({}),
+
+  printCollections(await countCollections({ patients, appointments, auditRows }));
+  printAppointmentsPerDoctor({ doctors, appointments, today, tomorrow });
+  printAccounts();
+  printDemoNote(today);
+}
+
+async function countCollections({ patients, appointments, auditRows }) {
+  const [users, departments, doctors] = await Promise.all([
+    User.countDocuments({}),
+    Department.countDocuments({}),
+    Doctor.countDocuments({}),
+  ]);
+
+  return {
+    users,
+    departments,
+    doctors,
     patients: patients.length,
     appointments: appointments.length,
     auditLogs: auditRows,
   };
+}
 
+function printCollections(counts) {
   console.log('\nCollections');
+
   for (const [name, value] of Object.entries(counts)) {
     console.log('  %s: %d', name.padEnd(12), value);
   }
+}
 
+function printAppointmentsPerDoctor({ doctors, appointments, today, tomorrow }) {
   console.log('\nAppointments per doctor');
   console.log('  %s  %s  %s', 'doctor'.padEnd(18), 'today'.padStart(5), 'tomorrow'.padStart(8));
 
@@ -626,7 +665,9 @@ async function printSummary(doctors, appointments, patients, auditRows) {
 
     console.log('  %s  %s  %s', doctor.name.padEnd(18), String(on(today)).padStart(5), String(on(tomorrow)).padStart(8));
   }
+}
 
+function printAccounts() {
   console.log('\nDemo accounts (password for all of them: %s)\n', seedData.DEMO_PASSWORD);
   console.log('  %s  %s', 'super_admin '.padEnd(13), seedData.staff.admin.email);
 
@@ -637,7 +678,9 @@ async function printSummary(doctors, appointments, patients, auditRows) {
   for (const doctor of seedData.doctors) {
     console.log('  %s  %s', 'doctor'.padEnd(13), doctor.email);
   }
+}
 
+function printDemoNote(today) {
   const showcase = seedData.doctors.find((spec) => spec.email === SHOWCASE_DOCTOR);
 
   console.log('\nThe demo covers %d days back and %d days ahead of %s.', PAST_DAYS, FUTURE_DAYS, today);
@@ -650,8 +693,8 @@ async function printSummary(doctors, appointments, patients, auditRows) {
   console.log('');
 }
 
-main().catch(async (err) => {
-  console.error('seed failed:', err.message);
+main().catch(async (error) => {
+  console.error('seed failed:', error.message);
   await mongoose.disconnect();
   process.exit(1);
 });
