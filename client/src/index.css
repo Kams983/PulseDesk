@@ -1,1 +1,19 @@
-@import 'tailwindcss';
+@import '@fontsource/plus-jakarta-sans/400.css';
+@import '@fontsource/plus-jakarta-sans/500.css';
+@import '@fontsource/plus-jakarta-sans/600.css';
+@import '@fontsource/plus-jakarta-sans/700.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-page font-sans text-ink antialiased;
+  }
+
+  /* one focus treatment everywhere, so a keyboard user can always see where they are */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-page;
+  }
+}

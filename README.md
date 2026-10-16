@@ -23,7 +23,18 @@ server/
     utils/        AppError, response, asyncHandler, sequence, time
     validators/   zod schemas
   tests/          jest suites, in-memory MongoDB
-client/           vite app, features land in a later phase
+client/
+  src/
+    api/          one module per feature plus axiosClient, the only place a token is attached
+    components/
+      ui/         the design system: Button, Input, Select, Card, Badge, Modal, Toast, ...
+      layout/     AppLayout, Sidebar (the rail), TopBar (account menu and the phone drawer)
+      dashboard/  TrendChart, DayList, UpcomingCard, DoctorsOnDuty
+    context/      AuthContext (the session) and ToastContext
+    hooks/        useDebounce, useSocket
+    pages/        Dashboard, Scheduler, Appointments, Doctors, Login, NotFound
+    routes/       AppRoutes plus the ProtectedRoute guard
+    utils/        constants (roles, statuses, nav), dateUtils, formatters
 ```
 
 ## Running locally
@@ -54,7 +65,7 @@ npm run seed
 | doctor | dr.bello@emr.test | Password123! |
 | doctor | dr.adeyemi@emr.test | Password123! |
 
-The three doctors get General Medicine with 15 minute slots, Pediatrics with 20 and Cardiology with 30, all on a Monday to Friday 09:00 to 12:00 and 13:00 to 17:00 schedule with a lunch break, so the slot logic has something uneven to work with. Seven appointments are placed on the next working day in every status, which gives the list page something to show.
+The three doctors get General Medicine with 15 minute slots, Pediatrics with 20 and Cardiology with 30, all on a Monday to Friday 09:00 to 12:00 and 13:00 to 17:00 schedule with a lunch break, so the slot logic has something uneven to work with. Seven appointments are placed on the next working day in every status, which gives the scheduler and the list something to show, and the days behind today are filled in with completed visits (one of them cancelled) so the dashboard trend is a line rather than a flat zero. Today itself carries one visit in each of the three live states, which is what the board reads.
 
 ```
 cd client
@@ -63,6 +74,8 @@ npm run dev
 ```
 
 The ui runs on http://localhost:5173 and proxies `/api` to the server, so the session cookie stays first party in development.
+
+If your shell already exports `PORT` (for example from a tool that sets it to `0`), that value wins over `server/.env` and the server refuses to start, because the two disagree. Run it with `PORT=5000 npm run dev` in that case.
 
 ## Tests
 
@@ -104,6 +117,15 @@ Jest runs against an in-memory MongoDB, so no local database is needed and no re
 | POST | `/api/v1/appointments/:id/complete` | doctor, super_admin | arrived to completed, by the doctor on the visit |
 | GET | `/api/v1/dashboard` | any role | the clinic's `today` plus today for the desk, own today and upcoming for a doctor |
 | GET | `/api/v1/dashboard/trend?days=7` | any role | one zero filled entry per day ending today, a doctor sees only their own |
+
+## Frontend
+
+The client is a Vite and React app. Tailwind holds every colour, radius and shadow in one config, and a status is defined once in `utils/constants.js`, so an appointment cannot be blue on the board and green in a badge. Nothing on screen is computed that the server already knows: the clinic's `today` comes from the dashboard response and the browser clock is never the reference, which is why the calendar highlights the server's today separately from the day you picked.
+
+The access token lives in memory only and the refresh token in an `httpOnly` cookie, so a reload restores the session with one silent refresh instead of a stored credential. A 401 on any request triggers exactly one refresh, the requests that failed while it was in flight are replayed once, and a refresh that fails signs the user out.
+
+The dashboard is the clinic board: five counts read from `counts.today`, a range selector over the trend endpoint, and a calendar whose selected day drives the list beside it. A doctor gets their own counts plus an upcoming block; the desk gets the on-duty register instead. Pages that belong to a later phase are reachable and honest about it rather than being dead links.
+
 
 ## Dashboard
 
