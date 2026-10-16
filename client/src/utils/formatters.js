@@ -52,9 +52,8 @@ export function formatDateLong(iso) {
   return formatDate(iso, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-// An instant is not a calendar date: createdAt, arrivedAt and completedAt are real ISO timestamps, and a
-// booking made at 00:30 in Lagos carries the previous day in UTC. Calendar dates stay clinic-owned
-// strings read in UTC; an instant belongs to the clock of whoever is reading it.
+// An instant is not a calendar date: a booking made at 00:30 in Lagos carries the previous day in UTC,
+// so timestamps are read in the reader's own zone while calendar dates stay in UTC.
 export function formatStamp(iso, options = { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) {
   if (!iso) {
     return '';
@@ -71,9 +70,7 @@ export function firstName(name = '') {
   return name.trim().split(/\s+/)[0] || name;
 }
 
-// How the board greets someone: the given name, with the title kept when there is one, so a doctor is
-// greeted as "Dr. Ifeanyi" and everyone else by their first name alone. A greeting is one person talking
-// to another, and nobody says a full name out loud.
+// the given name, with the title kept when there is one, so a doctor is greeted as "Dr. Ifeanyi"
 const TITLE_PATTERN = /^(dr|mr|mrs|ms|miss|prof)\.?$/i;
 
 export function greetingName(name = '') {
@@ -112,8 +109,7 @@ export function pluralize(count, word) {
 }
 
 // How long somebody has been sitting in the waiting room, measured from the arrival stamp the server
-// wrote. The clock is passed in rather than read here, so the card repaints from its own minute tick and
-// two rows on the same screen can never be measured against two different moments.
+// wrote. The clock is passed in, so every row on a screen is measured against the same moment.
 export function waitingMinutes(arrivedAt, now) {
   if (!arrivedAt) {
     return 0;

@@ -17,6 +17,12 @@ const LEGEND = [
   { status: SLOT_STATUS.PAST, text: 'Past: gone for the day' },
 ];
 
+function toMinutes(time) {
+  const [hours, minutes] = time.split(':').map(Number);
+
+  return hours * 60 + minutes;
+}
+
 // Memoised together with the buttons: the page re-renders on every keystroke in the booking modal and on
 // every refetch, and neither changes a single prop this grid is given.
 function SlotGrid({ slots, bookedByStart, canBook, selectedStart, onSelect }) {
@@ -24,64 +30,76 @@ function SlotGrid({ slots, bookedByStart, canBook, selectedStart, onSelect }) {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-4 text-xs text-ink-muted">
-        {LEGEND.map(({ status, text }) => (
-          <span key={status} className="inline-flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 rounded-pill ${SLOT_STYLES[status].dot}`} aria-hidden="true" />
-            {text}
-          </span>
-        ))}
-        <span className="ml-auto font-semibold text-ink">
-          {available} of {slots.length} free
-        </span>
-      </div>
+      <SlotLegend available={available} total={slots.length} />
 
       <div className="mt-5 space-y-6">
-        {PERIODS.map((period) => {
-          const periodSlots = slots.filter((slot) => {
-            const minutes = toMinutes(slot.startTime);
-
-            return minutes >= period.from && minutes < period.to;
-          });
-
-          if (periodSlots.length === 0) {
-            return null;
-          }
-
-          return (
-            <section key={period.key}>
-              <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">{period.label}</h3>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
-                {periodSlots.map((slot) => {
-                  const appointment = bookedByStart.get(slot.startTime);
-
-                  return (
-                    <SlotButton
-                      key={slot.startTime}
-                      startTime={slot.startTime}
-                      endTime={slot.endTime}
-                      status={slot.status}
-                      appointmentStatus={appointment ? appointment.status : undefined}
-                      patientName={appointment ? appointment.patient.name : undefined}
-                      canBook={canBook}
-                      isSelected={selectedStart === slot.startTime}
-                      onSelect={onSelect}
-                    />
-                  );
-                })}
-              </div>
-            </section>
-          );
-        })}
+        {PERIODS.map((period) => (
+          <PeriodSection
+            key={period.key}
+            period={period}
+            slots={slots.filter((slot) => inPeriod(slot, period))}
+            bookedByStart={bookedByStart}
+            canBook={canBook}
+            selectedStart={selectedStart}
+            onSelect={onSelect}
+          />
+        ))}
       </div>
     </div>
   );
 }
 
-function toMinutes(time) {
-  const [hours, minutes] = time.split(':').map(Number);
+function SlotLegend({ available, total }) {
+  return (
+    <div className="flex flex-wrap items-center gap-4 text-xs text-ink-muted">
+      {LEGEND.map(({ status, text }) => (
+        <span key={status} className="inline-flex items-center gap-2">
+          <span className={`h-2.5 w-2.5 rounded-pill ${SLOT_STYLES[status].dot}`} aria-hidden="true" />
+          {text}
+        </span>
+      ))}
+      <span className="ml-auto font-semibold text-ink">
+        {available} of {total} free
+      </span>
+    </div>
+  );
+}
 
-  return hours * 60 + minutes;
+function PeriodSection({ period, slots, bookedByStart, canBook, selectedStart, onSelect }) {
+  if (slots.length === 0) {
+    return null;
+  }
+
+  return (
+    <section>
+      <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">{period.label}</h3>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+        {slots.map((slot) => {
+          const appointment = bookedByStart.get(slot.startTime);
+
+          return (
+            <SlotButton
+              key={slot.startTime}
+              startTime={slot.startTime}
+              endTime={slot.endTime}
+              status={slot.status}
+              appointmentStatus={appointment ? appointment.status : undefined}
+              patientName={appointment ? appointment.patient.name : undefined}
+              canBook={canBook}
+              isSelected={selectedStart === slot.startTime}
+              onSelect={onSelect}
+            />
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function inPeriod(slot, period) {
+  const minutes = toMinutes(slot.startTime);
+
+  return minutes >= period.from && minutes < period.to;
 }
 
 export default memo(SlotGrid);

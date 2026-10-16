@@ -1,7 +1,7 @@
 // A small mirror of server/src/services/slotGenerator.js. The server stays the authority, since a
 // schedule is only ever saved through the api, which validates and regenerates the grid itself, but the
-// needs to answer "how many slots does this day produce" while the form is still open, and a round trip
-// per keystroke would be a worse answer than a copy of eight lines of pure arithmetic.
+// editor answers "how many slots does this day produce" while the form is still open, and a round trip
+// per keystroke would be a worse answer than a copy of eight lines of arithmetic.
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export const WEEKDAYS = [
@@ -14,19 +14,19 @@ export const WEEKDAYS = [
   { value: 0, label: 'Sunday', short: 'Sun' },
 ];
 
-export function toMinutes(time) {
+function toMinutes(time) {
   const [hours, minutes] = String(time).split(':').map(Number);
 
   return hours * 60 + minutes;
 }
 
-export function isValidTime(time) {
+function isValidTime(time) {
   return TIME_PATTERN.test(String(time));
 }
 
 // The same grid the api builds: step from the start of each session, drop a slot that would run into a
 // break, and keep one slot per start so two overlapping sessions cannot produce the same one twice.
-export function buildSlots({ sessions = [], breaks = [], slotDurationMinutes } = {}) {
+function buildSlots({ sessions = [], breaks = [], slotDurationMinutes } = {}) {
   if (!Number.isInteger(slotDurationMinutes) || slotDurationMinutes <= 0) {
     return [];
   }
@@ -66,10 +66,8 @@ export function countSlots(day, slotDurationMinutes) {
   return buildSlots({ ...day, slotDurationMinutes }).length;
 }
 
-// The rules the server's zod schema enforces, restated as messages a form can show beside a field: a
-// window has to be readable, has to end after it starts, sessions in one day may not overlap, and a
-// break has to fall inside the hours the doctor actually works.
-export function validateWindow(window, label) {
+// a window has to be readable and has to end after it starts
+function validateWindow(window, label) {
   if (!isValidTime(window.start) || !isValidTime(window.end)) {
     return `${label} needs a start and an end time`;
   }
@@ -81,9 +79,22 @@ export function validateWindow(window, label) {
   return '';
 }
 
+// The rules the server's schema enforces, restated as messages a form can show beside a field: a window
+// has to be readable, has to end after it starts, sessions in one day may not overlap, and a break has
+// to fall inside the hours the doctor actually works.
 export function validateDay(day) {
   const errors = {};
+  const ordered = orderedSessions(day, errors);
 
+  addOverlapError(ordered, errors);
+  addBreakErrors(day, ordered, errors);
+
+  return errors;
+}
+
+// only the windows that parsed can be ordered, so the overlap test runs on the readable ones and the
+// unreadable ones keep their own message
+function orderedSessions(day, errors) {
   day.sessions.forEach((session, index) => {
     const message = validateWindow(session, 'Session');
 
@@ -92,37 +103,45 @@ export function validateDay(day) {
     }
   });
 
-  // only the windows that parsed can be ordered, so the overlap test runs on the readable ones and the
-  // unreadable ones keep their own message
-  const ordered = day.sessions
+  return day.sessions
     .map((session, index) => ({ session, index }))
     .filter(({ index }) => !errors[`sessions.${index}.end`])
     .map(({ session }) => session)
     .sort((a, b) => toMinutes(a.start) - toMinutes(b.start));
+}
 
+function addOverlapError(ordered, errors) {
   ordered.forEach((session, index) => {
     if (index > 0 && toMinutes(session.start) < toMinutes(ordered[index - 1].end)) {
       errors.sessions = 'Sessions in one day cannot overlap';
     }
   });
+}
 
-  const dayStart = ordered.length > 0 ? toMinutes(ordered[0].start) : null;
-  const dayEnd = ordered.length > 0 ? toMinutes(ordered[ordered.length - 1].end) : null;
+function addBreakErrors(day, ordered, errors) {
+  if (ordered.length === 0) {
+    day.breaks.forEach((brk, index) => reportWindowProblem(brk, index, null, null, errors));
 
-  day.breaks.forEach((brk, index) => {
-    const message = validateWindow(brk, 'Break');
+    return;
+  }
 
-    if (message) {
-      errors[`breaks.${index}.end`] = message;
-      return;
-    }
+  const dayStart = toMinutes(ordered[0].start);
+  const dayEnd = toMinutes(ordered[ordered.length - 1].end);
 
-    if (dayStart !== null && (toMinutes(brk.start) < dayStart || toMinutes(brk.end) > dayEnd)) {
-      errors[`breaks.${index}.start`] = 'A break must fall inside the hours the doctor works';
-    }
-  });
+  day.breaks.forEach((brk, index) => reportWindowProblem(brk, index, dayStart, dayEnd, errors));
+}
 
-  return errors;
+function reportWindowProblem(brk, index, dayStart, dayEnd, errors) {
+  const message = validateWindow(brk, 'Break');
+
+  if (message) {
+    errors[`breaks.${index}.end`] = message;
+    return;
+  }
+
+  if (dayStart !== null && (toMinutes(brk.start) < dayStart || toMinutes(brk.end) > dayEnd)) {
+    errors[`breaks.${index}.start`] = 'A break must fall inside the hours the doctor works';
+  }
 }
 
 export function hasErrors(errors) {
@@ -153,7 +172,10 @@ export function toggleDay(schedule, dayOfWeek, isOn) {
     // a day that is switched on needs something to be on with, and the clinic's shape is the seed's
     return {
       ...day,
-      sessions: [{ name: 'Morning', start: '09:00', end: '12:00' }, { name: 'Evening', start: '13:00', end: '17:00' }],
+      sessions: [
+        { name: 'Morning', start: '09:00', end: '12:00' },
+        { name: 'Evening', start: '13:00', end: '17:00' },
+      ],
       breaks: [{ name: 'Lunch', start: '12:00', end: '13:00' }],
     };
   });
@@ -172,12 +194,12 @@ export function scheduleSummary(doctor) {
     return 'No working days set';
   }
 
-  const labels = WEEKDAYS.filter((weekday) => days.includes(weekday.value)).map((weekday) => weekday.short);
-
   // a Monday to Friday week is the common case and reads better than five abbreviations in a row
   if (days.length === 5 && [1, 2, 3, 4, 5].every((day) => days.includes(day))) {
     return 'Mon-Fri';
   }
 
-  return labels.join(', ');
+  return WEEKDAYS.filter((weekday) => days.includes(weekday.value))
+    .map((weekday) => weekday.short)
+    .join(', ');
 }
