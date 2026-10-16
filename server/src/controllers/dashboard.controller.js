@@ -15,4 +15,11 @@ async function getTrend(req, res) {
   return sendSuccess(res, { data: trend });
 }
 
-module.exports = { getDashboard, getTrend };
+// the month behind the mini calendar, zero filled so a quiet day is a zero rather than a gap
+async function getCalendar(req, res) {
+  const calendar = await dashboardService.getCalendar(req.user, req.query.month);
+
+  return sendSuccess(res, { data: calendar });
+}
+
+module.exports = { getCalendar, getDashboard, getTrend };

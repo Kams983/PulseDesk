@@ -3,7 +3,7 @@ const dashboardController = require('../controllers/dashboard.controller');
 const authenticate = require('../middlewares/authenticate');
 const validate = require('../middlewares/validate');
 const asyncHandler = require('../utils/asyncHandler');
-const { trendQuerySchema } = require('../validators/dashboard.validator');
+const { calendarQuerySchema, trendQuerySchema } = require('../validators/dashboard.validator');
 
 const router = Router();
 
@@ -11,5 +11,7 @@ const router = Router();
 router.get('/', authenticate, asyncHandler(dashboardController.getDashboard));
 // one entry per day ending today, zero filled, scoped to the caller
 router.get('/trend', authenticate, validate(trendQuerySchema, 'query'), asyncHandler(dashboardController.getTrend));
+// one entry per day of one month, which is what the calendar dots read
+router.get('/calendar', authenticate, validate(calendarQuerySchema, 'query'), asyncHandler(dashboardController.getCalendar));
 
 module.exports = router;
