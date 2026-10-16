@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarX2, RefreshCw, Stethoscope } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import EmptyState from '@/components/ui/EmptyState';
 import ErrorMessage from '@/components/ui/ErrorMessage';
 import Skeleton from '@/components/ui/Skeleton';
+import BookingModal from '@/components/scheduler/BookingModal';
 import SlotGrid from '@/components/scheduler/SlotGrid';
 import SchedulerFilters from '@/components/scheduler/SchedulerFilters';
 import { listAppointments } from '@/api/appointmentApi';
@@ -20,11 +21,13 @@ import { formatDateLong, pluralize } from '@/utils/formatters';
 // One doctor, one day, slot by slot: the board a receptionist books from and a doctor reads.
 export default function SchedulerPage() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const canBook = canBookAppointments(user.role);
 
   const [departmentId, setDepartmentId] = useState('');
   const [doctorId, setDoctorId] = useState('');
   const [pickedDate, setPickedDate] = useState(null);
+  const [selectedStart, setSelectedStart] = useState(null);
 
   // The clinic's date, never the browser's: a page opened before midnight in another timezone would
   // otherwise default to a day the server still considers tomorrow.
@@ -80,11 +83,18 @@ export default function SchedulerPage() {
 
   // Stable on purpose: SlotButton is memoised, and a handler that was rebuilt every render would make
   // every button in the grid re-render on every keystroke in the booking dialog.
-  const handleSelectSlot = useCallback(() => {}, []);
+  const handleSelectSlot = useCallback((startTime) => setSelectedStart(startTime), []);
 
   function refresh() {
     slots.refetch();
     day.refetch();
+  }
+
+  function afterBooking() {
+    setSelectedStart(null);
+    queryClient.invalidateQueries({ queryKey: ['slots', doctorId, date] });
+    queryClient.invalidateQueries({ queryKey: ['appointments', 'day', doctorId, date] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
   }
 
   if (board.isError) {
@@ -93,6 +103,7 @@ export default function SchedulerPage() {
 
   const workingDay = doctor && date ? doctor.schedule.some((daySchedule) => daySchedule.dayOfWeek === weekdayIndex(date)) : true;
   const gridSlots = slots.data?.slots || [];
+  const selectedSlot = selectedStart ? gridSlots.find((slot) => slot.startTime === selectedStart) : null;
   // a fetch in flight over data already on screen: the grid stays, with a quiet line above it
   const isRefreshing = slots.isFetching && !slots.isPending;
 
@@ -174,11 +185,21 @@ export default function SchedulerPage() {
             slots={gridSlots}
             bookedByStart={bookedByStart}
             canBook={canBook}
-            selectedStart={null}
+            selectedStart={selectedStart}
             onSelect={handleSelectSlot}
           />
         )}
       </Card>
+
+      {selectedSlot && doctor ? (
+        <BookingModal
+          doctor={doctor}
+          date={date}
+          slot={selectedSlot}
+          onClose={() => setSelectedStart(null)}
+          onBooked={afterBooking}
+        />
+      ) : null}
     </div>
   );
 }
