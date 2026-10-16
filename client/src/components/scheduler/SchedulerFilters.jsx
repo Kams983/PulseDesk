@@ -61,7 +61,7 @@ export default function SchedulerFilters({
                     : 'border-line bg-card text-ink hover:border-primary hover:text-primary'
                 }`}
               >
-                <span className={`text-[11px] font-medium ${isSelected ? 'text-white/80' : 'text-ink-muted'}`}>
+                <span className={`text-xs font-medium ${isSelected ? 'text-white/80' : 'text-ink-muted'}`}>
                   {formatDate(iso, { weekday: 'short' })}
                 </span>
                 <span className="text-sm font-semibold">{Number(iso.slice(-2))}</span>

@@ -7,7 +7,8 @@ import { useAuth } from '@/context/AuthContext';
 import { ROLE_LABELS, navItemsFor } from '@/utils/constants';
 
 // The rail is icon only and disappears below lg, so this bar carries what the rail cannot: the brand on
-// a phone, and the signed in account on every screen.
+// a phone, and the signed in account on every screen. It has no horizontal padding of its own: it sits in
+// the same column as the page below it, so the two share their edges.
 export default function TopBar() {
   const { user, logout } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -36,7 +37,7 @@ export default function TopBar() {
   }
 
   return (
-    <header className="flex items-center justify-between gap-3 px-4 pb-2 pt-6 sm:px-6 lg:pt-8">
+    <header className="flex items-center justify-between gap-3 pb-2 pt-6 lg:pt-8">
       <div className="flex items-center gap-2 lg:hidden">
         <button
           type="button"
@@ -54,14 +55,8 @@ export default function TopBar() {
         </span>
       </div>
 
-      {/* takes the space the mobile brand leaves, so the account cluster stays on the right */}
-      <div className="hidden lg:block" />
-
-      <div className="flex items-center gap-2">
-        <span className="hidden rounded-pill bg-card px-3 py-1.5 text-xs font-semibold text-ink-muted shadow-card sm:inline-flex">
-          {ROLE_LABELS[user.role]}
-        </span>
-
+      {/* the brand is gone above lg, so the account cluster takes the free space and stays on the right */}
+      <div className="flex items-center gap-2 lg:ml-auto">
         <div className="relative" ref={accountRef}>
           <button
             type="button"
@@ -73,7 +68,8 @@ export default function TopBar() {
             <Avatar name={user.name} size="sm" />
             <span className="hidden text-left sm:block">
               <span className="block text-xs font-semibold leading-tight text-ink">{user.name}</span>
-              <span className="block text-[11px] leading-tight text-ink-muted">{ROLE_LABELS[user.role]}</span>
+              {/* the role is stated once, here, rather than also as a pill beside this cluster */}
+              <span className="block text-xs leading-tight text-ink-muted">{ROLE_LABELS[user.role]}</span>
             </span>
             <ChevronDown size={14} className="text-ink-muted" aria-hidden="true" />
           </button>

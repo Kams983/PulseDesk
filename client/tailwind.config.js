@@ -15,14 +15,16 @@ export default {
         },
         ink: {
           DEFAULT: '#1F2150',
-          muted: '#6B6F8F',
+          // Dark enough to pass 4.5:1 on both the card and the page behind it at 12px: the lighter grey
+          // this used to be only reached 4.3:1 on the page, which is under the line for body size text.
+          muted: '#5F6382',
         },
         line: '#E3E5F2',
         // one pair per appointment status: text on tint, reused by badges, slots and the chart
         scheduled: { DEFAULT: '#2B5BD7', tint: '#E3EBFD' },
         arrived: { DEFAULT: '#B26A00', tint: '#FDF0DC' },
         completed: { DEFAULT: '#1F7A4C', tint: '#E1F5EA' },
-        cancelled: { DEFAULT: '#6B6F8F', tint: '#ECEDF4' },
+        cancelled: { DEFAULT: '#5F6382', tint: '#ECEDF4' },
         danger: { DEFAULT: '#B3261E', tint: '#FCE8E6' },
       },
       borderRadius: {
