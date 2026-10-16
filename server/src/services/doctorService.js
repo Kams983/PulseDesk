@@ -3,17 +3,19 @@ const Department = require('../models/department.model');
 const Doctor = require('../models/doctor.model');
 const User = require('../models/user.model');
 const AppError = require('../utils/AppError');
+const { escapeRegExp } = require('../utils/regex');
 const { hashPassword } = require('./authService');
 const { logAction } = require('./auditService');
 
-// the only fields a doctor response needs, so a lean query never drags the schedule of every doctor
-// through the wire for a list page
+// only the fields a doctor response needs, so a list page never drags every schedule through the wire
 const DOCTOR_FIELDS = 'name departmentId specialization slotDurationMinutes schedule';
 
 async function listDoctors({ departmentId, q, requester } = {}) {
   if (requester.role === ROLES.DOCTOR) {
-    // a doctor's own profile is the only one they may see, so the filters are ignored entirely
-    return findOwnDoctorProfile(requester.id, true);
+    // a doctor's own profile is the only one they may see, so the filters are ignored
+    const own = await findOwnDoctorProfile(requester.id);
+
+    return own ? [own] : [];
   }
 
   const filter = {};
@@ -23,8 +25,7 @@ async function listDoctors({ departmentId, q, requester } = {}) {
   }
 
   if (q) {
-    // a contains match rather than a prefix one, so "okafor" finds "Dr. Ifeanyi Okafor". The nameLower
-    // index cannot be used by an unanchored regex, which is a fair trade at clinic sized lists.
+    // a contains match, so "okafor" finds "Dr. Ifeanyi Okafor". The nameLower index cannot serve it.
     filter.nameLower = new RegExp(escapeRegExp(q.toLowerCase()));
   }
 
@@ -62,22 +63,22 @@ async function createDoctor(payload, actor, ip) {
 
   const passwordHash = await hashPassword(payload.password);
 
-  return createWithRollback(async () => {
-    const user = await User.create({
-      name: payload.name,
-      email: payload.email,
-      passwordHash,
-      role: ROLES.DOCTOR,
-    });
+  return createDoctorWithLogin({ ...payload, passwordHash, actor, ip });
+}
 
+// There are no transactions on a single mongod, so a half created doctor is undone by hand rather than
+// leaving a login with no profile behind.
+async function createDoctorWithLogin({ name, email, departmentId, specialization, slotDurationMinutes, schedule, passwordHash, actor, ip }) {
+  try {
+    const user = await User.create({ name, email, passwordHash, role: ROLES.DOCTOR });
     const doctor = await Doctor.create({
       userId: user._id,
-      departmentId: payload.departmentId,
-      name: payload.name,
-      nameLower: payload.name.toLowerCase(),
-      specialization: payload.specialization,
-      slotDurationMinutes: payload.slotDurationMinutes,
-      schedule: payload.schedule || [],
+      departmentId,
+      name,
+      nameLower: name.toLowerCase(),
+      specialization,
+      slotDurationMinutes,
+      schedule: schedule || [],
     });
 
     await logAction({
@@ -85,12 +86,24 @@ async function createDoctor(payload, actor, ip) {
       action: 'DOCTOR_CREATED',
       entity: 'Doctor',
       entityId: doctor._id,
-      metadata: { email: payload.email, departmentId: String(payload.departmentId) },
+      metadata: { email, departmentId: String(departmentId) },
       ip,
     });
 
-    return doctor;
-  }, () => User.deleteOne({ email: payload.email }));
+    return await findWithDepartment(doctor._id);
+  } catch (error) {
+    await User.deleteOne({ email }).catch((rollbackError) => console.error('doctor rollback failed:', rollbackError.message));
+
+    // two requests can pass the check above at the same instant, and the loser still needs to be told
+    // which field is the problem
+    if (error.code === 11000) {
+      throw AppError.conflict('A user with that email already exists', [
+        { field: 'email', message: 'That email is already in use' },
+      ]);
+    }
+
+    throw error;
+  }
 }
 
 async function createReceptionist(payload, actor, ip) {
@@ -142,44 +155,14 @@ async function replaceSchedule(doctorId, payload, actor, ip) {
   return findWithDepartment(doctor._id);
 }
 
-// no transactions on a single mongod, so a half created doctor is undone by hand instead of leaving
-// a login that has no profile behind
-async function createWithRollback(create, rollback) {
-  try {
-    const created = await create();
-
-    return await findWithDepartment(created._id);
-  } catch (err) {
-    // the rollback itself must not hide the original failure, but a failed rollback has to be visible
-    await rollback().catch((rollbackError) => console.error('doctor rollback failed:', rollbackError.message));
-
-    // the backstop for two requests that pass the check above at the same instant: one insert loses on
-    // the unique index, and the loser must still be told which field is the problem
-    if (err.code === 11000) {
-      throw AppError.conflict('A user with that email already exists', [
-        { field: 'email', message: 'That email is already in use' },
-      ]);
-    }
-
-    throw err;
-  }
-}
-
 async function findWithDepartment(doctorId) {
   return Doctor.findById(doctorId).select(DOCTOR_FIELDS).populate('departmentId', 'name code').lean();
 }
 
-// the caller's own doctor profile. The patient and appointment services scope a doctor by it, so it
-// is exported rather than reimplemented per feature.
-async function findOwnDoctorProfile(userId, asList = false) {
-  const doctor = await Doctor.findOne({ userId }).select(DOCTOR_FIELDS).populate('departmentId', 'name code').lean();
-
-  if (asList) {
-    // a doctor account without a profile is possible only through a bad import, an empty list is honest
-    return doctor ? [doctor] : [];
-  }
-
-  return doctor;
+// the caller's own doctor profile. The patient and appointment services scope a doctor by it, so it is
+// shared rather than reimplemented per feature.
+async function findOwnDoctorProfile(userId) {
+  return Doctor.findOne({ userId }).select(DOCTOR_FIELDS).populate('departmentId', 'name code').lean();
 }
 
 async function assertDepartmentExists(departmentId) {
@@ -190,9 +173,8 @@ async function assertDepartmentExists(departmentId) {
   }
 }
 
-// The field is named so the form can put the answer beside the email box, which is where the person who
-// typed it is looking. A 409 with no details falls back to a banner on the client, and "already exists"
-// over a form of six inputs does not say which one to change.
+// the field is named so a form can put the answer beside the email box, which is where the person who
+// typed it is looking
 async function assertEmailIsFree(email) {
   const existing = await User.exists({ email: String(email).toLowerCase() });
 
@@ -201,10 +183,6 @@ async function assertEmailIsFree(email) {
       { field: 'email', message: 'That email is already in use' },
     ]);
   }
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 module.exports = {
