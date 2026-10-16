@@ -6,7 +6,7 @@ Appointment module for a clinic: users and roles, doctor schedules, slot generat
 
 The system covers the working day of a small clinic from three points of view. A super admin manages the register (departments, doctors, receptionists) and each doctor's weekly schedule. A receptionist books, finds and moves visits along, and can register a new patient while doing so. A doctor opens their own board read only, sees only their own visits, and closes a visit once the patient has been seen.
 
-What is implemented: authentication with rotating refresh tokens and role based access control, doctor schedules and slot generation, booking for a known or a brand new patient, a status workflow over one appointment row, an audited soft cancel, a filterable and sortable appointment list with server side paging, a dashboard with the clinic's own clock, and realtime updates over Socket.IO so a booking made at the front desk appears on the doctor's board without a refresh.
+What is implemented: authentication with rotating refresh tokens and role based access control, doctor schedules and slot generation, booking for a known or a brand new patient, a status workflow over one appointment row, an audited soft cancel, a filterable and sortable appointment list with server side paging, a role aware dashboard built on the clinic's own clock (a waiting room for the desk, a next patient card for a doctor, a per doctor breakdown for a super admin), and realtime updates over Socket.IO so a booking made at the front desk appears on the doctor's board without a refresh.
 
 What is not implemented is listed honestly under Known Limitations.
 
@@ -19,7 +19,7 @@ What is not implemented is listed honestly under Known Limitations.
 
 ```
 server/
-  scripts/        seed.js, wipes and recreates the demo data
+  scripts/        seed.js (wipes and rebuilds the demo), seedData.js (the fictional facts it reads)
   src/
     config/       env.js (the only reader of process.env), db.js, constants.js
     controllers/  one thin function per route
@@ -37,13 +37,13 @@ client/
     components/
       ui/         the design system: Button, Input, Select, Card, Badge, Modal, Pagination, Toast, ...
       layout/     AppLayout, Sidebar (the rail), TopBar (account menu and the phone drawer)
-      dashboard/  TrendChart, DayList, UpcomingCard, DoctorsOnDuty
+      dashboard/  TrendChart, DayList, UpcomingCard, DoctorsOnDuty, WaitingRoomCard, NextPatientCard
       scheduler/  SchedulerFilters, SlotGrid, SlotButton, BookingModal, PatientPicker, LiveIndicator
       appointments/ AppointmentRow, AppointmentCards, AppointmentsTable, AppointmentsFilters,
                     AppointmentDetailsModal, EditAppointmentModal, CancelAppointmentModal
       doctors/    AddDoctorModal, AddReceptionistModal, ScheduleEditorModal
     context/      AuthContext (the session), SocketContext (the one live connection), ToastContext
-    hooks/        useDebounce, useDocumentTitle, useMediaQuery, useSocket
+    hooks/        useDebounce, useDocumentTitle, useMediaQuery, useMinuteTick, useSocket
     pages/        Dashboard, Scheduler, Appointments, Doctors, Login, NotFound
     routes/       AppRoutes plus the ProtectedRoute guard
     utils/        constants, dateUtils, formatters, schedule, appointmentActions, formErrors
@@ -270,10 +270,13 @@ Booking a slot someone already holds is a `409`, a time the grid does not offer 
 
 | Method | Path | Roles | Description |
 | --- | --- | --- | --- |
-| GET | `/dashboard` | any role | the clinic's `today` plus counts; a doctor gets their own |
+| GET | `/dashboard` | any role | the clinic's `today` plus counts; a doctor gets their own, plus their next patient |
 | GET | `/dashboard/trend?days=7` | any role | one zero filled entry per day ending today |
+| GET | `/dashboard/calendar?month=2026-10` | any role | one entry per day of that month, zero filled |
 
-`today` is the clinic's calendar date in `CLINIC_TIMEZONE` and the only clock the client trusts, so a browser in another timezone cannot disagree with the server about what is past.
+`today` is the clinic's calendar date in `CLINIC_TIMEZONE` and the only clock the client trusts, so a browser in another timezone cannot disagree with the server about what is past. What the board carries follows the role: a super admin gets `doctors` and a `byDoctor` breakdown of today, a doctor gets `counts` for today and everything still ahead plus the one `next` patient to call in, and the desk gets the counts it shares with the super admin. Nothing is computed twice on the client that the server already knows.
+
+The calendar month is a `YYYY-MM` string and an empty or missing one means the current clinic month. It exists because the trend only looks backwards: a dot under a day that has appointments needs a count for days that have not happened yet, and one grouped query per month is cheaper than one per cell.
 
 ## Environment Variables
 
@@ -347,17 +350,28 @@ env -u PORT npm run dev      # and the same for npm run seed
 npm run seed
 ```
 
-This wipes the collections it owns, so never point it at real data. It creates three departments, three doctors, five patient records and the appointments described below.
+This wipes every collection it owns, so never point it at real data. It refuses to run under `NODE_ENV=production` unless you pass `--force`, and it prints the counts it wrote, the appointments per doctor for today and tomorrow, and the accounts below when it finishes.
 
 | Role | Email | Password |
 | --- | --- | --- |
 | super_admin | admin@emr.test | Password123! |
 | receptionist | reception@emr.test | Password123! |
+| receptionist | reception2@emr.test | Password123! |
 | doctor | dr.okafor@emr.test | Password123! |
+| doctor | dr.ibrahim@emr.test | Password123! |
 | doctor | dr.bello@emr.test | Password123! |
 | doctor | dr.adeyemi@emr.test | Password123! |
+| doctor | dr.sani@emr.test | Password123! |
+| doctor | dr.etim@emr.test | Password123! |
+| doctor | dr.williams@emr.test | Password123! |
 
-The three doctors are General Medicine with 15 minute slots, Pediatrics with 20 and Cardiology with 30, all on a Monday to Friday 09:00 to 12:00 and 13:00 to 17:00 schedule with a lunch break, so the slot logic has an even grid, an uneven one and a coarse one to work with. Seven appointments are placed on the next working day in every status, the days behind today are filled with completed visits (one cancelled) so the dashboard trend is a line rather than a flat zero, and today carries one visit in each of the three live states, which is what the board reads.
+It is two files on purpose: [scripts/seedData.js](server/scripts/seedData.js) holds the fictional facts (six departments, ten accounts, seven doctors with their own weekly schedules, thirty six patients and the visit purposes per department) and [scripts/seed.js](server/scripts/seed.js) only knows how to turn them into rows. Not one name, purpose or schedule is written in `seed.js`, so the whole demo can be reshaped by editing a single data file.
+
+Appointments are generated relative to the day you run it, in the clinic timezone, across 21 days back to 10 days ahead, and no date in the demo is hardcoded. For every day a doctor actually works, the real `generateSlots` builds the grid and about `busyness` of it is booked, weighted 1.5x towards the morning. Statuses come from the clock: past visits are mostly completed, future ones are mostly scheduled, and today's follow the time of day, so a slot that ended twenty minutes ago is complete while one in progress shows the patient as arrived. Randomness runs off a fixed seed, so two runs on the same day build the same clinic apart from today's own clock driven statuses.
+
+Two details exist to make a reviewer's first click interesting: the next working day for Dr. Tunde Adeyemi is filled to 95 percent, so the scheduler opens on a nearly full grid, and five cancelled slots also carry a later active booking for the same doctor and time, which is the double booking rule made visible in the data rather than only in a test.
+
+The doctors differ on purpose: 10, 15, 20 and 30 minute slots, a half day, a Saturday clinic, an evening only doctor whose mornings are ward rounds, and one whose session length does not divide evenly into her morning. Every index is built with `syncIndexes()` before the first insert, so the partial unique index that guards booking exists while the demo is being written.
 
 ### Docker
 
@@ -393,7 +407,7 @@ Current result:
 
 ```
 Test Suites: 8 passed, 8 total
-Tests:       53 passed, 53 total
+Tests:       57 passed, 57 total
 ```
 
 The suites are `utils`, `health`, `errorHandler`, `models` (indexes and constraints), `slotGenerator` (pure functions, no fixtures), `concurrency`, `dashboard` and `realtime`.
