@@ -45,6 +45,72 @@ const PATIENTS = [
   { name: 'Ngozi Eze', gender: 'female', dateOfBirth: '2002-09-15', mobile: '09022334455' },
 ];
 
+// the days behind today that the dashboard trend reads, one week back
+const HISTORY_DAYS = [1, 2, 3, 4, 5, 6, 7];
+
+// The dashboard is a board for the clinic's today plus a line for the week behind it, and both would be
+// empty with only the booking demo in place. So today gets one visit in each live state, and the week
+// gets a rising number of completed ones, thinning out as it goes back.
+async function createHistory(doctors, patients, createdBy) {
+  const now = nowInClinicTz();
+  const rows = [
+    { offset: 0, doctor: doctors[0], patient: patients[0], startTime: '09:00', status: APPOINTMENT_STATUS.COMPLETED, purpose: 'Blood pressure review' },
+    { offset: 0, doctor: doctors[1], patient: patients[1], startTime: '09:00', status: APPOINTMENT_STATUS.ARRIVED, purpose: 'Immunization review' },
+    { offset: 0, doctor: doctors[2], patient: patients[2], startTime: '13:00', status: APPOINTMENT_STATUS.SCHEDULED, purpose: 'Cardiology consult' },
+  ];
+
+  // per doctor per day, so two visits never land on the same start time
+  const used = new Map();
+
+  for (const offset of HISTORY_DAYS) {
+    const day = now.minus({ days: offset });
+
+    // the clinic does not open at the weekend, and a zero there is exactly what the chart should show
+    if (day.weekday > 5) {
+      continue;
+    }
+
+    const visits = Math.max(1, 6 - offset);
+
+    for (let index = 0; index < visits; index += 1) {
+      const doctor = doctors[index % doctors.length];
+      const key = `${doctor._id.toString()}:${day.toISODate()}`;
+      const slot = used.get(key) || 0;
+
+      used.set(key, slot + 1);
+
+      rows.push({
+        offset,
+        doctor,
+        patient: patients[(index + offset) % patients.length],
+        // the first visit of the day starts the morning session, the next ones step by slot length
+        startTime: minutesToTime(timeToMinutes('09:00') + slot * doctor.slotDurationMinutes),
+        // one cancellation in the week, so the cancelled state exists somewhere in the demo data
+        status: offset === 4 && index === 0 ? APPOINTMENT_STATUS.CANCELLED : APPOINTMENT_STATUS.COMPLETED,
+        purpose: 'Completed consultation',
+      });
+    }
+  }
+
+  const nowDate = new Date();
+  const documents = rows.map((row) => ({
+    patientId: row.patient._id,
+    doctorId: row.doctor._id,
+    departmentId: row.doctor.departmentId,
+    date: now.minus({ days: row.offset }).toISODate(),
+    startTime: row.startTime,
+    endTime: minutesToTime(timeToMinutes(row.startTime) + row.doctor.slotDurationMinutes),
+    status: row.status,
+    purpose: row.purpose,
+    createdBy,
+    ...snapshot(row.doctor, row.patient),
+    ...(row.status === APPOINTMENT_STATUS.SCHEDULED ? {} : { arrivedAt: nowDate }),
+    ...(row.status === APPOINTMENT_STATUS.COMPLETED ? { completedAt: nowDate } : {}),
+  }));
+
+  return Appointment.insertMany(documents);
+}
+
 // tomorrow, pushed to Monday when tomorrow falls on a weekend, so a reviewer always sees slots
 function demoDate() {
   const tomorrow = nowInClinicTz().plus({ days: 1 });
@@ -185,7 +251,9 @@ function printCredentials(date, counts) {
   console.log('  doctor        dr.okafor@emr.test');
   console.log('  doctor        dr.bello@emr.test');
   console.log('  doctor        dr.adeyemi@emr.test');
-  console.log('\nCreated %d departments, %d doctors, %d patients, %d appointments on %s\n', counts.departments, counts.doctors, counts.patients, counts.appointments, date);
+  console.log('\nCreated %d departments, %d doctors, %d patients and %d appointments:', counts.departments, counts.doctors, counts.patients, counts.appointments);
+  console.log('  seven on the next working day (%s) and the rest across today and the week behind it, so the', date);
+  console.log('  dashboard trend and the day board both have data.\n');
 }
 
 async function seed() {
@@ -202,12 +270,13 @@ async function seed() {
   const patients = await createPatients(receptionist._id);
   const date = demoDate();
   const appointments = await createAppointments(doctors, patients, receptionist._id, date);
+  const history = await createHistory(doctors, patients, receptionist._id);
 
   printCredentials(date, {
     departments: departments.size,
     doctors: doctorSpecs.length,
     patients: patients.length,
-    appointments: appointments.length,
+    appointments: appointments.length + history.length,
   });
 
   await mongoose.disconnect();
