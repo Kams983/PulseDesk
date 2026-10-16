@@ -22,8 +22,7 @@ async function searchPatients(q) {
   return Patient.find(buildSearchFilter(q)).select(PATIENT_FIELDS).sort({ patientCode: 1 }).limit(SEARCH_LIMIT).lean();
 }
 
-// one box has to accept a code, a phone number or a name, so the shape of what was typed decides
-// which field is searched
+// one box accepts a code, a phone number or a name, so the shape of what was typed decides the search
 function buildSearchFilter(q) {
   const term = String(q || '').trim();
 
@@ -36,8 +35,8 @@ function buildSearchFilter(q) {
     return { mobile: new RegExp(`^${escapeRegExp(term)}`) };
   }
 
-  // anchored so the nameLower index is used, and escaped so a typed dot or bracket cannot turn into
-  // a regular expression of its own
+  // anchored so the nameLower index can be used, and escaped so a typed dot or bracket stays a
+  // character instead of becoming part of a pattern
   return { nameLower: anchoredPrefix(term.toLowerCase()) };
 }
 
@@ -55,8 +54,8 @@ async function getPatientById(patientId, requester) {
   return patient;
 }
 
-// a doctor may only open a patient they have actually seen, which keeps the register private without
-// an extra permission table
+// a doctor may only open a patient they have seen, which keeps the register private without a
+// permission table of its own
 async function assertDoctorHasSeenPatient(requester, patientId) {
   const own = await doctorService.findOwnDoctorProfile(requester.id);
 
@@ -80,6 +79,10 @@ async function createPatientFromInput(input, createdBy) {
     throw duplicateMobile(existing);
   }
 
+  return createPatient({ input, mobile, createdBy });
+}
+
+async function createPatient({ input, mobile, createdBy }) {
   try {
     return await Patient.create({
       patientCode: await nextPatientCode(),
@@ -90,22 +93,24 @@ async function createPatientFromInput(input, createdBy) {
       dateOfBirth: input.dateOfBirth,
       createdBy,
     });
-  } catch (err) {
-    // the check above is only there for a friendly message, the unique index is the real guard
-    if (err.code === 11000) {
-      const winner = await Patient.findOne({ mobile }).select(PATIENT_FIELDS).lean();
-
-      if (winner) {
-        throw duplicateMobile(winner);
-      }
+  } catch (error) {
+    // the check above is there for a friendly message, the unique index is the real guard
+    if (error.code !== 11000) {
+      throw error;
     }
 
-    throw err;
+    const winner = await Patient.findOne({ mobile }).select(PATIENT_FIELDS).lean();
+
+    if (!winner) {
+      throw error;
+    }
+
+    throw duplicateMobile(winner);
   }
 }
 
 // the existing patient travels in the error so the desk can offer "use this patient" instead of
-// silently merging two people with the same phone number
+// silently merging two people with one phone number
 function duplicateMobile(existing) {
   return AppError.conflict('A patient with this mobile number already exists', [
     {
@@ -122,9 +127,7 @@ function duplicateMobile(existing) {
 }
 
 module.exports = {
-  PATIENT_FIELDS,
   SEARCH_LIMIT,
-  buildSearchFilter,
   createPatientFromInput,
   getPatientById,
   nextPatientCode,
