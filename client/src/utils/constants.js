@@ -79,9 +79,17 @@ export const SLOT_STYLES = {
   },
 };
 
+// The chart's own tokens, so its two axes cannot end up in two different greys. The ink mirrors the
+// muted colour in tailwind.config.js, which is the one grey the rest of the app writes small text in.
+export const CHART_INK = '#5F6382';
+export const CHART_GRID = '#E3E5F2';
+// a fill is the series colour at this opacity: enough to read the area, light enough to read the grid
+// and the line through it
+const CHART_FILL_OPACITY = 0.12;
+
 export const TREND_SERIES = [
-  { key: 'total', label: 'All appointments', color: '#4B4FB5' },
-  { key: 'completed', label: 'Completed', color: '#1F7A4C' },
+  { key: 'total', label: 'Booked', color: '#4B4FB5', fillOpacity: CHART_FILL_OPACITY },
+  { key: 'completed', label: 'Completed', color: '#1F7A4C', fillOpacity: CHART_FILL_OPACITY },
 ];
 
 // the rail, in order. A role that is not listed never sees the item, and the route guard agrees.

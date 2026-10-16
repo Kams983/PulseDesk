@@ -71,8 +71,9 @@ export function firstName(name = '') {
   return name.trim().split(/\s+/)[0] || name;
 }
 
-// How the board greets someone: a titled name keeps the title and the given name ("Dr. Ifeanyi"), a
-// name without one is used as it is, because "Front Desk" shortened to "Front" reads like a bug.
+// How the board greets someone: the given name, with the title kept when there is one, so a doctor is
+// greeted as "Dr. Ifeanyi" and everyone else by their first name alone. A greeting is one person talking
+// to another, and nobody says a full name out loud.
 const TITLE_PATTERN = /^(dr|mr|mrs|ms|miss|prof)\.?$/i;
 
 export function greetingName(name = '') {
@@ -83,7 +84,7 @@ export function greetingName(name = '') {
   }
 
   if (!TITLE_PATTERN.test(parts[0])) {
-    return parts.join(' ');
+    return parts[0];
   }
 
   const title = `${parts[0].replace(/\.$/, '')}.`;
@@ -108,4 +109,54 @@ export function greetingFor(date = new Date()) {
 
 export function pluralize(count, word) {
   return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+// How long somebody has been sitting in the waiting room, measured from the arrival stamp the server
+// wrote. The clock is passed in rather than read here, so the card repaints from its own minute tick and
+// two rows on the same screen can never be measured against two different moments.
+export function waitingMinutes(arrivedAt, now) {
+  if (!arrivedAt) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor((now.getTime() - new Date(arrivedAt).getTime()) / 60_000));
+}
+
+export function waitingFor(arrivedAt, now) {
+  const minutes = waitingMinutes(arrivedAt, now);
+
+  if (minutes < 1) {
+    return 'just arrived';
+  }
+
+  if (minutes < 60) {
+    return `${minutes} min waiting`;
+  }
+
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m waiting`;
+}
+
+// A day is either today, tomorrow or a date, and a desk should never have to work out which.
+export function relativeDay(iso, today) {
+  if (!iso || !today) {
+    return '';
+  }
+
+  if (iso === today) {
+    return 'today';
+  }
+
+  const day = new Date(`${iso}T00:00:00Z`);
+  const reference = new Date(`${today}T00:00:00Z`);
+  const difference = Math.round((day - reference) / 86_400_000);
+
+  if (difference === 1) {
+    return 'tomorrow';
+  }
+
+  if (difference === -1) {
+    return 'yesterday';
+  }
+
+  return formatDate(iso, { weekday: 'long', day: 'numeric', month: 'short' });
 }

@@ -1,6 +1,5 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { CalendarDays } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ErrorMessage from '@/components/ui/ErrorMessage';
@@ -11,14 +10,18 @@ import Spinner from '@/components/ui/Spinner';
 import StatCard from '@/components/ui/StatCard';
 import DayList from '@/components/dashboard/DayList';
 import DoctorsOnDuty from '@/components/dashboard/DoctorsOnDuty';
+import NextPatientCard from '@/components/dashboard/NextPatientCard';
 import TrendChart from '@/components/dashboard/TrendChart';
 import UpcomingCard from '@/components/dashboard/UpcomingCard';
-import { getDashboard, getTrend } from '@/api/dashboardApi';
+import WaitingRoomCard from '@/components/dashboard/WaitingRoomCard';
+import { getCalendar, getDashboard, getTrend } from '@/api/dashboardApi';
 import { listAppointments } from '@/api/appointmentApi';
 import { listDoctors } from '@/api/doctorApi';
 import { useAuth } from '@/context/AuthContext';
+import { useRealtime } from '@/context/SocketContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
-import { ROLES, STAT_CARDS } from '@/utils/constants';
+import { useMinuteTick } from '@/hooks/useMinuteTick';
+import { APPOINTMENT_STATUS, ROLES, STAT_CARDS } from '@/utils/constants';
 import { formatDate, formatDateLong, greetingFor, greetingName, pluralize } from '@/utils/formatters';
 
 const TREND_RANGES = [
@@ -27,25 +30,45 @@ const TREND_RANGES = [
   { value: 30, label: '30 days' },
 ];
 
-// The board is read only and every number it needs comes from two endpoints plus the day under the
-// calendar, so nothing here is computed that the server already knows.
+// the same three broadcasts the appointments page listens to, so the board is as live as the lists
+const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointment:cancelled'];
+
+// The board is read only: the counts, the trend, the calendar month, the day under the calendar and the
+// waiting room all come from the api, so nothing here is computed that the server already knows. What
+// the board contains follows the role. A doctor gets their own next patient first and then their own
+// queue, the desk gets the waiting room, and a super admin also gets today broken down per doctor.
 export default function DashboardPage() {
   useDocumentTitle('Dashboard');
 
   const { user } = useAuth();
+  const { socket } = useRealtime();
+  const queryClient = useQueryClient();
+  const now = useMinuteTick();
   const [trendDays, setTrendDays] = useState(7);
   // null rather than a date until the server reports today: the browser clock is never the reference
   const [selectedDate, setSelectedDate] = useState(null);
 
+  const isDoctor = user.role === ROLES.DOCTOR;
+  // both desk roles work the same waiting room, which is why the card follows the desk rather than one
+  // role, and a doctor is the only one who does not get it
+  const isDesk = !isDoctor;
+
   const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: getDashboard });
   const today = dashboard.data?.today;
   const selectedDay = selectedDate || today;
-  const isDesk = user.role !== ROLES.DOCTOR;
+  const month = (selectedDay || today)?.slice(0, 7);
 
   const trend = useQuery({
     queryKey: ['dashboard', 'trend', trendDays],
     queryFn: () => getTrend(trendDays),
     enabled: Boolean(today),
+  });
+
+  // the dots under the calendar come from one grouped query for the whole month, never one per cell
+  const calendar = useQuery({
+    queryKey: ['dashboard', 'calendar', month],
+    queryFn: () => getCalendar(month),
+    enabled: Boolean(month),
   });
 
   const day = useQuery({
@@ -54,8 +77,32 @@ export default function DashboardPage() {
     enabled: Boolean(selectedDay),
   });
 
+  // the desk's live list: everyone marked arrived today who has not been completed
+  const waiting = useQuery({
+    queryKey: ['dashboard', 'waiting', today],
+    queryFn: () => listAppointments({ dateFrom: today, dateTo: today, status: APPOINTMENT_STATUS.ARRIVED, limit: 50, sortBy: 'startTime' }),
+    enabled: Boolean(today) && isDesk,
+  });
+
   // a doctor already gets their own counts from the dashboard, so only the desk fetches the register
   const doctors = useQuery({ queryKey: ['doctors'], queryFn: () => listDoctors(), enabled: isDesk });
+
+  // Live: any appointment the caller is allowed to see wakes the board, so an arrival shows up on the
+  // waiting room without anyone reloading the page.
+  useEffect(() => {
+    if (!socket) {
+      return undefined;
+    }
+
+    function onAppointmentEvent() {
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['appointments'] });
+    }
+
+    REALTIME_EVENTS.forEach((event) => socket.on(event, onAppointmentEvent));
+
+    return () => REALTIME_EVENTS.forEach((event) => socket.off(event, onAppointmentEvent));
+  }, [socket, queryClient]);
 
   if (dashboard.isError) {
     return <ErrorMessage message={dashboard.error.message} onRetry={dashboard.refetch} />;
@@ -65,24 +112,26 @@ export default function DashboardPage() {
   // the day query is disabled until the board reports the clinic date, and a disabled query is not
   // loading, so the first paint is still a skeleton rather than an empty day
   const isDayLoading = dashboard.isLoading || day.isLoading;
+  const appointments = day.data?.appointments || [];
+  // a busy day holds more than one page, so the card counts the day rather than the rows it loaded
+  const dayTotal = day.data?.meta?.total ?? appointments.length;
+  const dayCounts = calendar.data?.days.reduce((all, entry) => ({ ...all, [entry.date]: entry.total }), {}) || {};
 
   return (
     <div className="space-y-5">
-      <header className="flex flex-wrap items-end justify-between gap-4 px-1">
-        <div>
-          <h1 className="text-2xl font-bold text-ink sm:text-3xl">
-            {greetingFor()}, {greetingName(user.name)}
-          </h1>
-          <p className="mt-1 text-sm text-ink-muted">
-            {dashboard.isLoading ? 'Reading today’s board' : `Here is the board for ${formatDateLong(today)}`}
-          </p>
-        </div>
-
-        <span className="inline-flex items-center gap-2 rounded-pill bg-card px-3 py-2 text-xs font-semibold text-ink-muted shadow-card">
-          <CalendarDays size={14} aria-hidden="true" />
-          {dashboard.isLoading ? 'Clinic date loading' : formatDate(today, { weekday: 'short', day: 'numeric', month: 'short' })}
-        </span>
+      <header className="px-1">
+        <h1 className="text-2xl font-bold text-ink sm:text-3xl">
+          {greetingFor()}, {greetingName(user.name)}
+        </h1>
+        <p className="mt-1 text-sm text-ink-muted">
+          {dashboard.isLoading ? 'Reading today’s board' : `Here is the board for ${formatDateLong(today)}`}
+        </p>
       </header>
+
+      {/* the one card that comes before the numbers, because it is the thing to act on right now */}
+      {isDoctor ? (
+        <NextPatientCard next={dashboard.data?.next} today={today} isLoading={dashboard.isLoading} now={now} />
+      ) : null}
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
         {STAT_CARDS.map(({ key, label, icon, tone }) => (
@@ -96,6 +145,16 @@ export default function DashboardPage() {
           />
         ))}
       </div>
+
+      {isDesk ? (
+        <WaitingRoomCard
+          appointments={waiting.data?.appointments}
+          isLoading={waiting.isLoading}
+          error={waiting.isError ? waiting.error : null}
+          onRetry={waiting.refetch}
+          now={now}
+        />
+      ) : null}
 
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="space-y-5 xl:col-span-2">
@@ -126,13 +185,13 @@ export default function DashboardPage() {
           </Card>
 
           <Card
-            title={selectedDay === today ? 'Your patients today' : `Appointments on ${formatDate(selectedDay)}`}
+            title={isDoctor ? 'My queue' : selectedDay === today ? 'Your patients today' : `Appointments on ${formatDate(selectedDay)}`}
             subtitle={
               isDayLoading
                 ? 'Reading the day'
-                : `${pluralize(day.data?.appointments.length ?? 0, 'visit')} booked${
-                    selectedDay === today ? ' for today' : ''
-                  }`
+                : `${pluralize(dayTotal, 'visit')} booked${
+                    selectedDay === today ? ' for today' : ` on ${formatDate(selectedDay)}`
+                  }${appointments.length < dayTotal ? ` · showing the first ${appointments.length}` : ''}`
             }
             action={
               selectedDay !== today && today ? (
@@ -143,7 +202,7 @@ export default function DashboardPage() {
             }
           >
             <DayList
-              appointments={day.data?.appointments}
+              appointments={appointments}
               isLoading={isDayLoading}
               error={day.isError ? day.error : null}
               onRetry={day.refetch}
@@ -168,20 +227,22 @@ export default function DashboardPage() {
               <MiniCalendar
                 selectedDate={selectedDay}
                 today={today}
+                counts={dayCounts}
                 onSelect={setSelectedDate}
               />
             )}
           </Card>
 
-          {isDesk ? (
+          {isDoctor ? (
+            <UpcomingCard counts={counts?.upcoming} isLoading={dashboard.isLoading} />
+          ) : (
             <DoctorsOnDuty
               doctors={doctors.data}
-              count={dashboard.data?.doctors}
-              isLoading={doctors.isLoading}
+              today={today}
+              byDoctor={dashboard.data?.byDoctor}
+              isLoading={dashboard.isLoading || doctors.isLoading}
               canOpenRegister={user.role === ROLES.SUPER_ADMIN}
             />
-          ) : (
-            <UpcomingCard counts={counts?.upcoming} isLoading={dashboard.isLoading} />
           )}
         </div>
       </div>
