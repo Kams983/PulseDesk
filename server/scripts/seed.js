@@ -1,130 +1,127 @@
+// Rebuilds the demo clinic from scripts/seedData.js, positioned around the clinic's today so the data
+// never goes stale. Nothing about a person, a department or a purpose is written here: this file only
+// knows how to turn the facts in seedData.js into rows. Every generation rule below carries a one line
+// comment saying what it is for.
 const mongoose = require('mongoose');
+const { DateTime } = require('luxon');
+
 const connectDb = require('../src/config/db');
-const { ROLES, APPOINTMENT_STATUS } = require('../src/config/constants');
-const { hashPassword } = require('../src/services/authService');
+const env = require('../src/config/env');
 const models = require('../src/models');
 const patientService = require('../src/services/patientService');
-const { nowInClinicTz, timeToMinutes, minutesToTime } = require('../src/utils/time');
+const { APPOINTMENT_STATUS, ROLES } = require('../src/config/constants');
+const { hashPassword } = require('../src/services/authService');
+const { generateSlots } = require('../src/services/slotGenerator');
+const { nowInClinicTz, timeToMinutes } = require('../src/utils/time');
+const seedData = require('./seedData');
 
 const { User, RefreshToken, Department, Doctor, Patient, Appointment, AuditLog } = models;
 
-const DEMO_PASSWORD = 'Password123!';
+// how far the demo reaches, and the two dials that make it look like a clinic rather than a fixture
+const PAST_DAYS = 21;
+const FUTURE_DAYS = 10;
+const SHOWCASE_BUSYNESS = 0.95;
+// The one name this file is allowed to mention, because the rule is about this doctor: his next working
+// day is the grid a reviewer opens first. The data file carries people, not a "featured" flag.
+const SHOWCASE_DOCTOR = 'dr.adeyemi@emr.test';
+// a fixed seed, so two runs on the same day build the same clinic and a bug can be reproduced
+const PRNG_SEED = 20261016;
+// how many cancelled slots also get a later active booking, which is what shows the partial index working
+const ROOM_FOR_REBOOKING = 5;
 
-// every doctor gets the same weekday shape, only the slot length differs so the booking logic is
-// visibly exercised with 15, 20 and 30 minute grids
-function weekdaySchedule() {
-  return [1, 2, 3, 4, 5].map((dayOfWeek) => ({
-    dayOfWeek,
-    sessions: [
-      { name: 'Morning', start: '09:00', end: '12:00' },
-      { name: 'Evening', start: '13:00', end: '17:00' },
-    ],
-    breaks: [{ name: 'Lunch', start: '12:00', end: '13:00' }],
-  }));
+// which departments each demo patient usually attends, keyed the way a patient is uniquely identified
+const DEPT_CODES_BY_MOBILE = new Map(seedData.patients.map((spec) => [spec.mobile, spec.deptCodes]));
+
+// mulberry32, the smallest PRNG that is honestly reproducible: same seed, same sequence of numbers
+function mulberry32(seed) {
+  let state = seed >>> 0;
+
+  return function random() {
+    state = (state + 0x6d2b79f5) >>> 0;
+
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-const DEPARTMENTS = [
-  { name: 'General Medicine', code: 'GEN' },
-  { name: 'Pediatrics', code: 'PED' },
-  { name: 'Cardiology', code: 'CAR' },
-];
+const random = mulberry32(PRNG_SEED);
 
-const USERS = [
-  { name: 'Dr. Ifeanyi Okafor', email: 'dr.okafor@emr.test', role: ROLES.DOCTOR, department: 'GEN', specialization: 'Consultant Physician', slotDurationMinutes: 15 },
-  { name: 'Dr. Amina Bello', email: 'dr.bello@emr.test', role: ROLES.DOCTOR, department: 'PED', specialization: 'Paediatrician', slotDurationMinutes: 20 },
-  { name: 'Dr. Tunde Adeyemi', email: 'dr.adeyemi@emr.test', role: ROLES.DOCTOR, department: 'CAR', specialization: 'Cardiologist', slotDurationMinutes: 30 },
-  { name: 'System Administrator', email: 'admin@emr.test', role: ROLES.SUPER_ADMIN },
-  { name: 'Front Desk', email: 'reception@emr.test', role: ROLES.RECEPTIONIST },
-];
-
-const PATIENTS = [
-  { name: 'Chiamaka Nwosu', gender: 'female', dateOfBirth: '1991-04-18', mobile: '08031234567' },
-  { name: 'Emeka Obi', gender: 'male', dateOfBirth: '1985-11-02', mobile: '08059876543' },
-  { name: 'Fatima Yusuf', gender: 'female', dateOfBirth: '1998-06-27', mobile: '08144556677' },
-  { name: 'Oluwaseun Adeleke', gender: 'male', dateOfBirth: '1979-01-09', mobile: '07033445566' },
-  { name: 'Ngozi Eze', gender: 'female', dateOfBirth: '2002-09-15', mobile: '09022334455' },
-];
-
-// the days behind today that the dashboard trend reads, one week back
-const HISTORY_DAYS = [1, 2, 3, 4, 5, 6, 7];
-
-// The dashboard is a board for the clinic's today plus a line for the week behind it, and both would be
-// empty with only the booking demo in place. So today gets one visit in each live state, and the week
-// gets a rising number of completed ones, thinning out as it goes back.
-async function createHistory(doctors, patients, createdBy) {
-  const now = nowInClinicTz();
-  const rows = [
-    { offset: 0, doctor: doctors[0], patient: patients[0], startTime: '09:00', status: APPOINTMENT_STATUS.COMPLETED, purpose: 'Blood pressure review' },
-    { offset: 0, doctor: doctors[1], patient: patients[1], startTime: '09:00', status: APPOINTMENT_STATUS.ARRIVED, purpose: 'Immunization review' },
-    { offset: 0, doctor: doctors[2], patient: patients[2], startTime: '13:00', status: APPOINTMENT_STATUS.SCHEDULED, purpose: 'Cardiology consult' },
-  ];
-
-  // per doctor per day, so two visits never land on the same start time
-  const used = new Map();
-
-  for (const offset of HISTORY_DAYS) {
-    const day = now.minus({ days: offset });
-
-    // the clinic does not open at the weekend, and a zero there is exactly what the chart should show
-    if (day.weekday > 5) {
-      continue;
-    }
-
-    const visits = Math.max(1, 6 - offset);
-
-    for (let index = 0; index < visits; index += 1) {
-      const doctor = doctors[index % doctors.length];
-      const key = `${doctor._id.toString()}:${day.toISODate()}`;
-      const slot = used.get(key) || 0;
-
-      used.set(key, slot + 1);
-
-      rows.push({
-        offset,
-        doctor,
-        patient: patients[(index + offset) % patients.length],
-        // the first visit of the day starts the morning session, the next ones step by slot length
-        startTime: minutesToTime(timeToMinutes('09:00') + slot * doctor.slotDurationMinutes),
-        // one cancellation in the week, so the cancelled state exists somewhere in the demo data
-        status: offset === 4 && index === 0 ? APPOINTMENT_STATUS.CANCELLED : APPOINTMENT_STATUS.COMPLETED,
-        purpose: 'Completed consultation',
-      });
-    }
-  }
-
-  const nowDate = new Date();
-  const documents = rows.map((row) => ({
-    patientId: row.patient._id,
-    doctorId: row.doctor._id,
-    departmentId: row.doctor.departmentId,
-    date: now.minus({ days: row.offset }).toISODate(),
-    startTime: row.startTime,
-    endTime: minutesToTime(timeToMinutes(row.startTime) + row.doctor.slotDurationMinutes),
-    status: row.status,
-    purpose: row.purpose,
-    createdBy,
-    ...snapshot(row.doctor, row.patient),
-    ...(row.status === APPOINTMENT_STATUS.SCHEDULED ? {} : { arrivedAt: nowDate }),
-    ...(row.status === APPOINTMENT_STATUS.COMPLETED ? { completedAt: nowDate } : {}),
-  }));
-
-  return Appointment.insertMany(documents);
+// inclusive on both ends, because every rule here is written as a range a person would say out loud
+function randInt(min, max) {
+  return min + Math.floor(random() * (max - min + 1));
 }
 
-// tomorrow, pushed to Monday when tomorrow falls on a weekend, so a reviewer always sees slots
-function demoDate() {
-  const tomorrow = nowInClinicTz().plus({ days: 1 });
-  const weekday = tomorrow.weekday;
+function chance(probability) {
+  return random() < probability;
+}
 
-  if (weekday === 6) {
-    return tomorrow.plus({ days: 2 }).toISODate();
+function pick(list) {
+  return list[Math.floor(random() * list.length)];
+}
+
+// Fisher-Yates with the same seeded generator, so a shuffled subset is still reproducible
+function shuffle(list) {
+  const copy = [...list];
+
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(random() * (index + 1));
+
+    [copy[index], copy[swap]] = [copy[swap], copy[index]];
   }
 
-  if (weekday === 7) {
-    return tomorrow.plus({ days: 1 }).toISODate();
+  return copy;
+}
+
+// A clinic-local wall clock time as a real instant, which is what the timestamps on a row need.
+function atClinicTime(date, time) {
+  return DateTime.fromISO(`${date}T${time}`, { zone: env.clinicTimezone });
+}
+
+// day 0 is Sunday in the schedule and day 7 is Sunday in luxon, so luxon's 7 wraps to 0
+function scheduleFor(spec, weekday) {
+  return spec.weeklySchedule.find((day) => day.dayOfWeek === weekday % 7);
+}
+
+function currentUserIds(receptionists) {
+  return receptionists.map((user) => user._id);
+}
+
+async function main() {
+  refuseInProduction();
+
+  await connectDb();
+
+  console.log('seed: wiping every demo collection');
+  await wipe();
+  // indexes are built after the wipe and before any insert, because the partial unique index that
+  // prevents a double booking is exactly what the rebooked slot below is meant to demonstrate
+  await buildIndexes();
+
+  const users = await createUsers();
+  const departments = await createDepartments();
+  const doctors = await createDoctors(users, departments);
+  const patients = await createPatients(users.receptionists);
+
+  const appointments = await createAppointments(doctors, patients, users.receptionists);
+  const auditRows = await createAuditLogs(users, appointments);
+
+  await printSummary(doctors, appointments, patients, auditRows);
+
+  await mongoose.disconnect();
+}
+
+// A seed run deletes everything it can reach, so a production database is refused unless the operator
+// says so explicitly rather than by habit.
+function refuseInProduction() {
+  if (env.nodeEnv !== 'production' || process.argv.includes('--force')) {
+    return;
   }
 
-  return tomorrow.toISODate();
+  console.error('Refusing to seed with NODE_ENV=production. Pass --force if you really mean it.');
+  process.exit(1);
 }
 
 async function wipe() {
@@ -138,58 +135,363 @@ async function wipe() {
     AuditLog.deleteMany({}),
   ]);
 
-  // dropping the counter restarts patient codes at PT-000001, so a reseed looks like a fresh install
+  // the counter goes too, so patient codes restart at PT-000001 and a reseed looks like a fresh install
   await mongoose.connection.collection('counters').deleteMany({});
 }
 
+async function buildIndexes() {
+  for (const model of Object.values(models)) {
+    // including counters and TTL indexes: every constraint the api runs against exists before the
+    // first insert, otherwise the seed would happily write data the api would have rejected
+    await model.syncIndexes();
+  }
+}
+
 async function createUsers() {
-  const passwordHash = await hashPassword(DEMO_PASSWORD);
-  const users = await User.insertMany(USERS.map(({ name, email, role }) => ({ name, email, role, passwordHash })));
+  const passwordHash = await hashPassword(seedData.DEMO_PASSWORD);
+  const specs = [
+    { ...seedData.staff.admin, role: ROLES.SUPER_ADMIN },
+    ...seedData.staff.receptionists.map((receptionist) => ({ ...receptionist, role: ROLES.RECEPTIONIST })),
+    ...seedData.doctors.map((doctor) => ({ name: doctor.name, email: doctor.email, role: ROLES.DOCTOR })),
+  ];
+
+  const users = await User.insertMany(specs.map(({ name, email, role }) => ({ name, email, role, passwordHash })));
   const byEmail = new Map(users.map((user) => [user.email, user]));
 
-  return USERS.map((spec) => ({ spec, user: byEmail.get(spec.email) }));
+  return {
+    admin: byEmail.get(seedData.staff.admin.email),
+    receptionists: seedData.staff.receptionists.map((spec) => byEmail.get(spec.email)),
+    doctors: new Map(seedData.doctors.map((spec) => [spec.email, byEmail.get(spec.email)])),
+  };
 }
 
 async function createDepartments() {
-  const departments = await Department.insertMany(DEPARTMENTS);
+  const departments = await Department.insertMany(seedData.departments);
 
   return new Map(departments.map((department) => [department.code, department]));
 }
 
-async function createDoctors(userSpecs, departments) {
-  const doctorSpecs = userSpecs.filter(({ spec }) => spec.role === ROLES.DOCTOR);
-  const doctors = await Doctor.insertMany(
-    doctorSpecs.map(({ spec, user }) => ({
-      userId: user._id,
-      departmentId: departments.get(spec.department)._id,
-      name: spec.name,
-      nameLower: spec.name.toLowerCase(),
-      specialization: spec.specialization,
-      slotDurationMinutes: spec.slotDurationMinutes,
-      schedule: weekdaySchedule(),
-    }))
-  );
+async function createDoctors(users, departments) {
+  const documents = seedData.doctors.map((spec) => ({
+    userId: users.doctors.get(spec.email)._id,
+    departmentId: departments.get(spec.deptCode)._id,
+    // stored without the title so a name search on the given name finds them, the ui adds "Dr."
+    name: spec.name,
+    nameLower: spec.name.toLowerCase(),
+    specialization: spec.specialization,
+    slotDurationMinutes: spec.slotDurationMinutes,
+    schedule: spec.weeklySchedule,
+  }));
 
-  return { doctors, doctorSpecs };
+  const doctors = await Doctor.insertMany(documents);
+
+  // busyness and deptCode are facts about the demo, not about a doctor, so they are kept beside the
+  // document instead of being written into a model that has no column for them
+  return doctors.map((doctor, index) => ({ doctor, spec: seedData.doctors[index] }));
 }
 
-async function createPatients(createdBy) {
+async function createPatients(receptionists) {
   const patients = [];
+  const registered = currentUserIds(receptionists);
 
-  for (const spec of PATIENTS) {
-    // one at a time on purpose, each needs its own sequential code
+  for (const spec of seedData.patients) {
+    // one at a time: each patient needs its own sequential code from the counter the booking api also uses
+    const patientCode = await patientService.nextPatientCode();
+    const createdAt = nowInClinicTz().minus({ days: randInt(5, 120), hours: randInt(0, 20) });
+
     patients.push(
       await Patient.create({
-        ...spec,
+        patientCode,
+        name: spec.name,
         nameLower: spec.name.toLowerCase(),
-        // the same generator the booking route uses, so the seed and the api cannot drift
-        patientCode: await patientService.nextPatientCode(),
-        createdBy,
+        mobile: spec.mobile,
+        gender: spec.gender,
+        dateOfBirth: spec.dateOfBirth,
+        // the register is split between the two receptionists, the way a shared desk works
+        createdBy: pick(registered),
+        // registered between five days and four months ago, so the register has some history
+        createdAt: createdAt.toJSDate(),
       })
     );
   }
 
   return patients;
+}
+
+async function createAppointments(doctors, patients, receptionists) {
+  const clinicNow = nowInClinicTz();
+  const today = clinicNow.startOf('day').toISODate();
+  const registered = currentUserIds(receptionists);
+  // each booking keeps the demo facts beside it, because busyness and deptCode are not columns on a doctor
+  const booked = [];
+  // who has been seen by this doctor before, so a returning patient can come back
+  const seenBy = new Map();
+
+  for (const { doctor, spec } of doctors) {
+    const showcaseDay = nextWorkingDay(spec, clinicNow);
+
+    for (let offset = -PAST_DAYS; offset <= FUTURE_DAYS; offset += 1) {
+      const day = clinicNow.startOf('day').plus({ days: offset });
+      const date = day.toISODate();
+      const workingDay = scheduleFor(spec, day.weekday);
+
+      // the doctor does not work that weekday, so the day contributes nothing at all
+      if (!workingDay) {
+        continue;
+      }
+
+      // the real generator builds the grid, so the seed can only ever book times the api would accept
+      const slots = generateSlots({
+        sessions: workingDay.sessions,
+        breaks: workingDay.breaks,
+        slotDurationMinutes: doctor.slotDurationMinutes,
+      });
+
+      if (slots.length === 0) {
+        continue;
+      }
+
+      const isShowcase = date === showcaseDay;
+      const target = isShowcase
+        ? Math.round(slots.length * SHOWCASE_BUSYNESS)
+        : Math.round(slots.length * spec.busyness * (0.85 + random() * 0.3));
+
+      for (const slot of takeSlots(slots, target)) {
+        const dayStart = atClinicTime(date, '00:00');
+        // a patient has to have been registered before the day of the visit, or the booking would
+        // predate the person it belongs to
+        const pool = patients.filter(
+          (patient) => patientBelongsTo(patient, spec.deptCode) && patient.createdAt < dayStart.toJSDate()
+        );
+
+        if (pool.length === 0) {
+          continue;
+        }
+
+        const patient = pickPatient(pool, seenBy, doctor);
+        const status = statusFor({ date, today, isShowcase, slot, clinicNow });
+        const stamps = timestampsFor({ status, date, slot, clinicNow });
+
+        const row = {
+          patientId: patient._id,
+          doctorId: doctor._id,
+          departmentId: doctor.departmentId,
+          date,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          status,
+          purpose: pick(seedData.purposesByDept[spec.deptCode]),
+          // about one visit in four carries a note, the way a real diary looks
+          ...(chance(0.25) ? { notes: pick(seedData.sampleNotes) } : {}),
+          ...snapshot(doctor, patient),
+          createdBy: pick(registered),
+          createdAt: bookedAt({ date, patient, clinicNow }).toJSDate(),
+          ...stamps,
+        };
+
+        booked.push({ row, doctor, spec, date, slot });
+      }
+    }
+  }
+
+  // the desk cancels a couple of still-pending bookings today, which is both how a real board looks
+  // and what leaves a visible free slot behind
+  cancelTodaysBookings(booked, today, clinicNow);
+
+  const cancelled = booked.filter((entry) => entry.row.status === APPOINTMENT_STATUS.CANCELLED);
+  const rebooked = rebookCancelledSlots(cancelled, patients, receptionists, clinicNow);
+  const rows = booked.map((entry) => entry.row);
+
+  // mongoose drops the keys a status does not use, so one shape can describe every row
+  return Appointment.insertMany([...rows, ...rebooked]);
+}
+
+// Today is the one day a reviewer can watch change, so one or two of its bookings are cancelled with a
+// timestamp and a reason, and the rest keep following the clock.
+function cancelTodaysBookings(booked, today, clinicNow) {
+  const candidates = booked.filter((entry) => entry.date === today && entry.row.status === APPOINTMENT_STATUS.SCHEDULED);
+
+  for (const entry of shuffle(candidates).slice(0, randInt(1, 2))) {
+    // cancelled half an hour to ten hours ago, always before the slot it frees
+    entry.row.status = APPOINTMENT_STATUS.CANCELLED;
+    entry.row.cancelledAt = clinicNow.minus({ minutes: randInt(30, 600) }).toJSDate();
+    entry.row.cancelReason = pick(seedData.cancelReasons);
+  }
+}
+
+// The desk fills its morning list first, so a morning slot is 1.5 times as likely to be taken.
+// Weighted sampling without replacement: one weighted key per slot, take the highest.
+function takeSlots(slots, count) {
+  return slots
+    .map((slot) => ({
+      slot,
+      key: random() ** (1 / (timeToMinutes(slot.startTime) < 12 * 60 ? 1.5 : 1)),
+    }))
+    .sort((a, b) => b.key - a.key)
+    .slice(0, Math.min(count, slots.length))
+    .map((entry) => entry.slot);
+}
+
+function patientBelongsTo(patient, deptCode) {
+  return DEPT_CODES_BY_MOBILE.get(patient.mobile)?.includes(deptCode) ?? false;
+}
+
+// A patient with a history with this doctor comes back about twice as often as a new one, which is how
+// a real appointment book fills up. The coin is flipped before the branch so the generator is drawn
+// from the same number of times whatever the pool looks like.
+function pickPatient(pool, seenBy, doctor) {
+  const key = doctor._id.toString();
+  const previous = pool.filter((patient) => (seenBy.get(`${key}:${patient._id}`) || 0) > 0);
+  const prefersReturning = chance(0.6);
+  const chosen = previous.length > 0 && prefersReturning ? pick(previous) : pick(pool);
+
+  seenBy.set(`${key}:${chosen._id}`, (seenBy.get(`${key}:${chosen._id}`) || 0) + 1);
+
+  return chosen;
+}
+
+// A visit that has already happened is almost always completed, a future one is almost always still
+// scheduled, and today is decided by the clock rather than by the calendar. The roll is taken for every
+// row, even when the answer ignores it, so the seeded stream does not depend on what time it is.
+function statusFor({ date, today, isShowcase, slot, clinicNow }) {
+  const roll = random();
+
+  // the showcase day keeps every booking it took, because it is the grid a reviewer opens first and it
+  // should be as full as the rate beside SHOWCASE_BUSYNESS says it is
+  if (isShowcase) {
+    return APPOINTMENT_STATUS.SCHEDULED;
+  }
+
+  if (date < today) {
+    return roll < 0.85 ? APPOINTMENT_STATUS.COMPLETED : APPOINTMENT_STATUS.CANCELLED;
+  }
+
+  if (date > today) {
+    return roll < 0.92 ? APPOINTMENT_STATUS.SCHEDULED : APPOINTMENT_STATUS.CANCELLED;
+  }
+
+  const start = atClinicTime(date, slot.startTime);
+  const end = atClinicTime(date, slot.endTime);
+
+  if (end <= clinicNow.minus({ minutes: 20 })) {
+    return APPOINTMENT_STATUS.COMPLETED;
+  }
+
+  if (start <= clinicNow) {
+    return APPOINTMENT_STATUS.ARRIVED;
+  }
+
+  return APPOINTMENT_STATUS.SCHEDULED;
+}
+
+// The timestamps have to agree with the status they belong to: a patient arrives before the slot, a
+// visit closes after it, and a cancellation always happens before the time it cancels. Every offset is
+// drawn up front even when the status will not use it, so the clock cannot change the generator stream.
+function timestampsFor({ status, date, slot, clinicNow }) {
+  const start = atClinicTime(date, slot.startTime);
+  const end = atClinicTime(date, slot.endTime);
+  const arriveOffset = randInt(5, 15);
+  const completeOffset = randInt(1, 20);
+  const cancelOffset = randInt(2, 72);
+  const lateCancelOffset = randInt(30, 600);
+
+  if (status === APPOINTMENT_STATUS.ARRIVED || status === APPOINTMENT_STATUS.COMPLETED) {
+    return {
+      arrivedAt: start.minus({ minutes: arriveOffset }).toJSDate(),
+      ...(status === APPOINTMENT_STATUS.COMPLETED
+        ? { completedAt: end.plus({ minutes: completeOffset }).toJSDate() }
+        : {}),
+    };
+  }
+
+  if (status === APPOINTMENT_STATUS.CANCELLED) {
+    const candidate = start.minus({ hours: cancelOffset });
+
+    return {
+      cancelledAt: (candidate <= clinicNow ? candidate : clinicNow.minus({ minutes: lateCancelOffset })).toJSDate(),
+      cancelReason: pick(seedData.cancelReasons),
+    };
+  }
+
+  return {};
+}
+
+// Booked one to six days before the visit during desk hours, never in the future and never before the
+// patient was registered. The clamp offset is drawn with the rest, so the clock cannot shift the stream.
+function bookedAt({ date, patient, clinicNow }) {
+  const earliest = DateTime.fromJSDate(patient.createdAt, { zone: env.clinicTimezone }).plus({ hours: 2 });
+  const latest = clinicNow.minus({ hours: 1 });
+  const daysBefore = randInt(1, 6);
+  const hour = randInt(8, 18);
+  const minute = randInt(0, 59);
+  const clampMinutes = randInt(0, 240);
+  let at = atClinicTime(date, '09:00').minus({ days: daysBefore }).set({ hour, minute });
+
+  if (at > latest) {
+    at = latest.minus({ minutes: clampMinutes });
+  }
+
+  if (at < earliest) {
+    at = earliest;
+  }
+
+  return at;
+}
+
+// The next date on which this doctor actually works, which is the grid a reviewer will open first.
+function nextWorkingDay(spec, clinicNow) {
+  for (let offset = 1; offset <= 14; offset += 1) {
+    const day = clinicNow.plus({ days: offset });
+
+    if (scheduleFor(spec, day.weekday)) {
+      return day.toISODate();
+    }
+  }
+
+  return null;
+}
+
+// A cancelled row leaves the partial index, so the same doctor and time can hold an active booking
+// again. Five of them get exactly that, which is the double booking rule made visible.
+function rebookCancelledSlots(cancelled, patients, receptionists, clinicNow) {
+  const today = clinicNow.startOf('day').toISODate();
+  // today and the days ahead first, so the rebooked visit is something the board can still show
+  const candidates = [
+    ...cancelled.filter((entry) => entry.date >= today),
+    ...cancelled.filter((entry) => entry.date < today),
+  ].slice(0, ROOM_FOR_REBOOKING);
+
+  const rows = [];
+
+  for (const entry of candidates) {
+    const pool = patients.filter(
+      (patient) => patientBelongsTo(patient, entry.spec.deptCode) && String(patient._id) !== String(entry.row.patientId)
+    );
+
+    if (pool.length === 0) {
+      continue;
+    }
+
+    const patient = pick(pool);
+    const cancelledAt = DateTime.fromJSDate(entry.row.cancelledAt, { zone: env.clinicTimezone });
+
+    rows.push({
+      ...entry.row,
+      patientId: patient._id,
+      ...snapshot(entry.doctor, patient),
+      status: APPOINTMENT_STATUS.SCHEDULED,
+      purpose: pick(seedData.purposesByDept[entry.spec.deptCode]),
+      createdBy: pick(currentUserIds(receptionists)),
+      // booked after the cancellation that freed the time, and never in the future
+      createdAt: DateTime.min(cancelledAt.plus({ hours: randInt(1, 24) }), clinicNow.minus({ minutes: 15 })).toJSDate(),
+      arrivedAt: undefined,
+      completedAt: undefined,
+      cancelledAt: undefined,
+      cancelReason: undefined,
+    });
+  }
+
+  return rows;
 }
 
 function snapshot(doctor, patient) {
@@ -204,85 +506,151 @@ function snapshot(doctor, patient) {
   };
 }
 
-async function createAppointments(doctors, patients, createdBy, date) {
-  const byName = new Map(doctors.map((doctor) => [doctor.nameLower, doctor]));
-  const [chiamaka, emeka, fatima, oluwaseun, ngozi] = patients;
+async function createAuditLogs(users, appointments) {
+  const clinicNow = nowInClinicTz();
+  const staff = [users.admin, ...users.receptionists];
+  const rows = [];
 
-  // start times respect each doctor's slot length, and the mix of statuses gives the list page
-  // something to show in every state
-  const specs = [
-    { doctor: 'dr. ifeanyi okafor', patient: chiamaka, startTime: '09:00', status: APPOINTMENT_STATUS.SCHEDULED, purpose: 'Follow up consultation' },
-    { doctor: 'dr. ifeanyi okafor', patient: emeka, startTime: '09:15', status: APPOINTMENT_STATUS.ARRIVED, purpose: 'Malaria review' },
-    { doctor: 'dr. ifeanyi okafor', patient: fatima, startTime: '10:30', status: APPOINTMENT_STATUS.SCHEDULED, purpose: 'Routine check up' },
-    { doctor: 'dr. amina bello', patient: oluwaseun, startTime: '09:00', status: APPOINTMENT_STATUS.SCHEDULED, purpose: 'Child immunization' },
-    { doctor: 'dr. amina bello', patient: ngozi, startTime: '09:40', status: APPOINTMENT_STATUS.SCHEDULED, purpose: 'Persistent cough' },
-    { doctor: 'dr. tunde adeyemi', patient: chiamaka, startTime: '13:00', status: APPOINTMENT_STATUS.SCHEDULED, purpose: 'Blood pressure review' },
-    { doctor: 'dr. tunde adeyemi', patient: oluwaseun, startTime: '14:00', status: APPOINTMENT_STATUS.COMPLETED, purpose: 'ECG result' },
-  ];
+  // the desk signs in each morning, so the last week has a believable login trail
+  for (const user of staff) {
+    for (let offset = 0; offset < 7; offset += 1) {
+      const at = clinicNow.minus({ days: offset }).set({ hour: randInt(7, 9), minute: randInt(0, 59) });
 
-  const now = new Date();
-  const documents = specs.map((spec) => {
-    const doctor = byName.get(spec.doctor);
-    const endTime = minutesToTime(timeToMinutes(spec.startTime) + doctor.slotDurationMinutes);
+      if (at > clinicNow) {
+        continue;
+      }
 
+      rows.push({
+        userId: user._id,
+        role: user.role,
+        action: 'LOGIN',
+        entity: 'User',
+        entityId: user._id,
+        ip: '127.0.0.1',
+        createdAt: at.toJSDate(),
+      });
+    }
+  }
+
+  const staffById = new Map(staff.map((user) => [String(user._id), user]));
+
+  for (const appointment of appointments) {
+    const actor = staffById.get(String(appointment.createdBy)) || users.receptionists[0];
+
+    // the same metadata the api writes for the same event, so the trail reads identically
+    rows.push({
+      userId: actor._id,
+      role: actor.role,
+      action: 'APPOINTMENT_CREATED',
+      entity: 'Appointment',
+      entityId: appointment._id,
+      metadata: { date: appointment.date, startTime: appointment.startTime, doctorId: String(appointment.doctorId) },
+      ip: '127.0.0.1',
+      createdAt: appointment.createdAt,
+    });
+
+    const stateChange = stateChangeRow(appointment, actor);
+
+    if (stateChange) {
+      rows.push(stateChange);
+    }
+  }
+
+  await AuditLog.insertMany(rows);
+
+  return rows.length;
+}
+
+function stateChangeRow(appointment, actor) {
+  const base = {
+    userId: actor._id,
+    role: actor.role,
+    entity: 'Appointment',
+    entityId: appointment._id,
+    ip: '127.0.0.1',
+  };
+
+  if (appointment.status === APPOINTMENT_STATUS.CANCELLED && appointment.cancelledAt) {
     return {
-      patientId: spec.patient._id,
-      doctorId: doctor._id,
-      departmentId: doctor.departmentId,
-      date,
-      startTime: spec.startTime,
-      endTime,
-      status: spec.status,
-      purpose: spec.purpose,
-      createdBy,
-      ...snapshot(doctor, spec.patient),
-      ...(spec.status === APPOINTMENT_STATUS.ARRIVED ? { arrivedAt: now } : {}),
-      ...(spec.status === APPOINTMENT_STATUS.COMPLETED ? { arrivedAt: now, completedAt: now } : {}),
+      ...base,
+      action: 'APPOINTMENT_CANCELLED',
+      metadata: { from: APPOINTMENT_STATUS.SCHEDULED, reason: appointment.cancelReason },
+      createdAt: appointment.cancelledAt,
     };
-  });
+  }
 
-  return Appointment.insertMany(documents);
+  if (appointment.status === APPOINTMENT_STATUS.ARRIVED && appointment.arrivedAt) {
+    return {
+      ...base,
+      action: 'APPOINTMENT_ARRIVED',
+      metadata: { date: appointment.date, startTime: appointment.startTime },
+      createdAt: appointment.arrivedAt,
+    };
+  }
+
+  if (appointment.status === APPOINTMENT_STATUS.COMPLETED && appointment.completedAt) {
+    return {
+      ...base,
+      action: 'APPOINTMENT_COMPLETED',
+      metadata: { date: appointment.date, startTime: appointment.startTime },
+      createdAt: appointment.completedAt,
+    };
+  }
+
+  return null;
 }
 
-function printCredentials(date, counts) {
-  console.log('\nDemo accounts (password for all of them: %s)\n', DEMO_PASSWORD);
-  console.log('  super_admin   admin@emr.test');
-  console.log('  receptionist  reception@emr.test');
-  console.log('  doctor        dr.okafor@emr.test');
-  console.log('  doctor        dr.bello@emr.test');
-  console.log('  doctor        dr.adeyemi@emr.test');
-  console.log('\nCreated %d departments, %d doctors, %d patients and %d appointments:', counts.departments, counts.doctors, counts.patients, counts.appointments);
-  console.log('  seven on the next working day (%s) and the rest across today and the week behind it, so the', date);
-  console.log('  dashboard trend and the day board both have data.\n');
-}
-
-async function seed() {
-  await connectDb();
-
-  console.log('seed: wiping demo collections');
-  await wipe();
-
-  const userSpecs = await createUsers();
-  const departments = await createDepartments();
-  const { doctors, doctorSpecs } = await createDoctors(userSpecs, departments);
-  const receptionist = userSpecs.find(({ spec }) => spec.role === ROLES.RECEPTIONIST).user;
-
-  const patients = await createPatients(receptionist._id);
-  const date = demoDate();
-  const appointments = await createAppointments(doctors, patients, receptionist._id, date);
-  const history = await createHistory(doctors, patients, receptionist._id);
-
-  printCredentials(date, {
-    departments: departments.size,
-    doctors: doctorSpecs.length,
+async function printSummary(doctors, appointments, patients, auditRows) {
+  const today = nowInClinicTz().toISODate();
+  const tomorrow = nowInClinicTz().plus({ days: 1 }).toISODate();
+  const counts = {
+    users: await User.countDocuments({}),
+    departments: await Department.countDocuments({}),
+    doctors: await Doctor.countDocuments({}),
     patients: patients.length,
-    appointments: appointments.length + history.length,
-  });
+    appointments: appointments.length,
+    auditLogs: auditRows,
+  };
 
-  await mongoose.disconnect();
+  console.log('\nCollections');
+  for (const [name, value] of Object.entries(counts)) {
+    console.log('  %s: %d', name.padEnd(12), value);
+  }
+
+  console.log('\nAppointments per doctor');
+  console.log('  %s  %s  %s', 'doctor'.padEnd(18), 'today'.padStart(5), 'tomorrow'.padStart(8));
+
+  for (const { doctor } of doctors) {
+    const forDoctor = appointments.filter((row) => String(row.doctorId) === String(doctor._id));
+    const on = (date) => forDoctor.filter((row) => row.date === date).length;
+
+    console.log('  %s  %s  %s', doctor.name.padEnd(18), String(on(today)).padStart(5), String(on(tomorrow)).padStart(8));
+  }
+
+  console.log('\nDemo accounts (password for all of them: %s)\n', seedData.DEMO_PASSWORD);
+  console.log('  %s  %s', 'super_admin '.padEnd(13), seedData.staff.admin.email);
+
+  for (const receptionist of seedData.staff.receptionists) {
+    console.log('  %s  %s', 'receptionist'.padEnd(13), receptionist.email);
+  }
+
+  for (const doctor of seedData.doctors) {
+    console.log('  %s  %s', 'doctor'.padEnd(13), doctor.email);
+  }
+
+  const showcase = seedData.doctors.find((spec) => spec.email === SHOWCASE_DOCTOR);
+
+  console.log('\nThe demo covers %d days back and %d days ahead of %s.', PAST_DAYS, FUTURE_DAYS, today);
+  console.log(
+    'The showcase day is %s: %s is booked at %d percent there.',
+    nextWorkingDay(showcase, nowInClinicTz()),
+    showcase.name,
+    Math.round(SHOWCASE_BUSYNESS * 100)
+  );
+  console.log('');
 }
 
-seed().catch(async (err) => {
+main().catch(async (err) => {
   console.error('seed failed:', err.message);
   await mongoose.disconnect();
   process.exit(1);
