@@ -10,7 +10,7 @@ import Spinner from '@/components/ui/Spinner';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
-import { firstName } from '@/utils/formatters';
+import { APP_NAME, firstName } from '@/utils/formatters';
 
 // the same accounts the seed creates, so a reviewer can sign in as each role without typing
 const DEMO_PASSWORD = 'Password123!';
@@ -83,7 +83,7 @@ export default function LoginPage() {
             </span>
             <div>
               <h1 className="text-lg font-bold text-ink">Sign in</h1>
-              <p className="text-sm text-ink-muted">Clinic appointment management</p>
+              <p className="text-sm text-ink-muted">{APP_NAME}: clinic appointment management</p>
             </div>
           </div>
 

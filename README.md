@@ -1,4 +1,4 @@
-# EMR Appointment Management
+# PulseDesk Appointment Management
 
 Appointment module for a clinic: users and roles, doctor schedules, slot generation, booking with double booking protection, a status workflow, an audit trail, and a live board over sockets. Backend is Express and MongoDB, frontend is Vite and React.
 
@@ -143,7 +143,7 @@ Base path `/api/v1`. Every response is `{ success, message, data, meta }`; error
 POST /api/v1/auth/login
 Content-Type: application/json
 
-{ "email": "reception@emr.test", "password": "Password123!" }
+{ "email": "reception@pulse.test", "password": "Password123!" }
 ```
 
 ```json

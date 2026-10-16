@@ -1,6 +1,6 @@
-# Engineering Decisions
+# PulseDesk Engineering Decisions
 
-Why the system looks the way it does, one short answer per question first, then the detail. Ambiguities that were resolved by picking the simplest reasonable option are listed under Assumptions in the [README](README.md).
+Why the system looks the way it does, one short answer per question first, then the detail. Ambiguities that were resolved by picking the simplest reasonable option are listed under Assumptions in the [README](../README.md).
 
 ## The short answers
 

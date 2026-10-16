@@ -1,8 +1,8 @@
 {
-  "name": "emr-server",
+  "name": "pulsedesk-server",
   "version": "1.0.0",
   "private": true,
-  "description": "EMR appointment management api",
+  "description": "PulseDesk appointment management api",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

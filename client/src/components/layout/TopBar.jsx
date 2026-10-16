@@ -4,7 +4,7 @@ import { ChevronDown, HeartPulse, LogOut, Menu, X } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
 import Button from '@/components/ui/Button';
 import { useAuth } from '@/context/AuthContext';
-import { ROLE_LABELS, navItemsFor } from '@/utils/constants';
+import { APP_NAME, ROLE_LABELS, navItemsFor } from '@/utils/constants';
 
 // The rail is icon only and disappears below lg, so this bar carries what the rail cannot: the brand on
 // a phone, and the signed in account on every screen. It has no horizontal padding of its own: it sits in
@@ -47,7 +47,7 @@ function BrandMark() {
       <span className="flex h-9 w-9 items-center justify-center rounded-control bg-primary text-white">
         <HeartPulse size={18} aria-hidden="true" />
       </span>
-      <span className="text-sm font-bold tracking-wide text-ink">EMR</span>
+      <span className="text-sm font-bold tracking-wide text-ink">{APP_NAME}</span>
     </span>
   );
 }

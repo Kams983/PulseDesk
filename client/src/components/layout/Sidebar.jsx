@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { HeartPulse, LogOut } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
-import { navItemsFor } from '@/utils/constants';
+import { APP_NAME, navItemsFor } from '@/utils/constants';
 
 // Icons only, so each item carries a tooltip with the page name and a screen reader label. Below lg this
 // rail is replaced by the drawer in the top bar. It is sticky rather than fixed: it is a column of the
@@ -14,6 +14,7 @@ export default function Sidebar() {
     <aside className="sticky top-6 z-30 hidden h-[calc(100vh-3rem)] w-[68px] shrink-0 flex-col items-center rounded-panel bg-card py-5 shadow-rail lg:flex">
       <span className="flex h-11 w-11 items-center justify-center rounded-control bg-primary text-white">
         <HeartPulse size={22} aria-hidden="true" />
+        <span className="sr-only">{APP_NAME}</span>
       </span>
 
       <nav className="mt-8 flex flex-1 flex-col items-center gap-3" aria-label="Main">

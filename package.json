@@ -1,8 +1,8 @@
 {
-  "name": "emr-appointment-management",
+  "name": "pulsedesk",
   "version": "1.0.0",
   "private": true,
-  "description": "Clinic appointment management: Express and MongoDB api, Vite and React client",
+  "description": "PulseDesk appointment management: Express and MongoDB api, Vite and React client",
   "scripts": {
     "install:all": "npm --prefix server install && npm --prefix client install",
     "dev:server": "npm --prefix server run dev",
