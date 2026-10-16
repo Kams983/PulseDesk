@@ -290,9 +290,17 @@ Content-Type: application/json
 POST {{host}}/appointments/PASTE_AN_APPOINTMENT_ID/arrive
 Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
 
+### Arriving a visit dated after today, expect 409 because the status and the date would contradict
+POST {{host}}/appointments/PASTE_A_FUTURE_APPOINTMENT_ID/arrive
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
+
 ### The doctor closes the visit
 POST {{host}}/appointments/PASTE_AN_APPOINTMENT_ID/complete
 Authorization: Bearer {{doctorLogin.response.body.data.accessToken}}
+
+### Completing as a receptionist, expect 403: closing a visit is the doctor's act, not the desk's
+POST {{host}}/appointments/PASTE_AN_ARRIVED_APPOINTMENT_ID/complete
+Authorization: Bearer {{receptionLogin.response.body.data.accessToken}}
 
 ### Cancel with a reason, expect 409 if it is already completed
 # curl -X DELETE -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"reason":"Patient called"}' http://localhost:5000/api/v1/appointments/$ID
