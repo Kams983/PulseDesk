@@ -297,6 +297,10 @@ A bad environment stops the server at boot with the exact problem printed, for e
 
 Seed the demo clinic with `npm run seed`. It empties the collections it owns, so never point it at real data, and it refuses to run under `NODE_ENV=production` unless you pass `--force`. The demo dates are built from the clinic's today, so the visits are always around now.
 
+### Demo data
+
+9 departments, 12 doctors and 74 patients, over 45 days back and 14 days ahead. Thirteen of the patients are on a regular review, so the same person comes back to the same doctor about every three or four weeks, and about half of the bookings carry a note written for their department.
+
 | Role | Email | Password |
 | --- | --- | --- |
 | super admin | admin@emr.test | Password123! |
@@ -305,10 +309,15 @@ Seed the demo clinic with `npm run seed`. It empties the collections it owns, so
 | doctor | dr.okafor@emr.test | Password123! |
 | doctor | dr.ibrahim@emr.test | Password123! |
 | doctor | dr.bello@emr.test | Password123! |
+| doctor | dr.inyang@emr.test | Password123! |
 | doctor | dr.adeyemi@emr.test | Password123! |
 | doctor | dr.sani@emr.test | Password123! |
+| doctor | dr.obiora@emr.test | Password123! |
 | doctor | dr.etim@emr.test | Password123! |
 | doctor | dr.williams@emr.test | Password123! |
+| doctor | dr.aliyu@emr.test | Password123! |
+| doctor | dr.okon@emr.test | Password123! |
+| doctor | dr.ekong@emr.test | Password123! |
 
 The sign in page has a button per role that fills the form, so you can try each one without typing.
 

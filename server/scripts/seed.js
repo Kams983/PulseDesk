@@ -16,9 +16,11 @@ const seedData = require('./seedData');
 
 const { User, RefreshToken, Department, Doctor, Patient, Appointment, AuditLog } = models;
 
-// how far the demo reaches, and the two dials that make it look like a clinic rather than a fixture
-const PAST_DAYS = 21;
-const FUTURE_DAYS = 10;
+// How far the demo reaches, and the two dials that make it look like a clinic rather than a fixture.
+// Six weeks back gives a monthly review at least one earlier visit to sit behind, and a fortnight ahead
+// is the horizon the scheduler lets the desk book in.
+const PAST_DAYS = 45;
+const FUTURE_DAYS = 14;
 const SHOWCASE_BUSYNESS = 0.95;
 // the one account this file mentions by name, because the rule is about that doctor's next working day
 const SHOWCASE_DOCTOR = 'dr.adeyemi@emr.test';
@@ -29,6 +31,10 @@ const ROOM_FOR_REBOOKING = 5;
 
 // which departments each demo patient usually attends, keyed by mobile
 const DEPT_CODES_BY_MOBILE = new Map(seedData.patients.map((spec) => [spec.mobile, spec.deptCodes]));
+// the regular reviews, keyed the same way, so a patient document can be matched back to its plan
+const FOLLOW_UP_BY_MOBILE = new Map(
+  seedData.patients.filter((spec) => spec.followUp).map((spec) => [spec.mobile, spec.followUp])
+);
 
 // mulberry32, the smallest random generator that is honestly reproducible: same seed, same numbers
 function mulberry32(seed) {
@@ -222,9 +228,15 @@ async function createAppointments(doctors, patients, receptionists) {
   const booked = [];
   // who has been seen by this doctor before, so a returning patient can come back
   const seenBy = new Map();
+  // A doctor holds at most one active booking per date and start time, and this set is what keeps the
+  // two booking paths below from handing the same slot out twice.
+  const taken = new Set();
 
-  for (const { doctor, spec } of doctors) {
-    collectDoctorBookings({ doctor, spec, patients, registered, booked, seenBy, clinicNow, today });
+  // the regular reviews go in before the random fill, so a busy diary can never crowd them out
+  booked.push(...bookFollowUpVisits({ doctors, patients, registered, taken, clinicNow, today }));
+
+  for (const entry of doctors) {
+    collectDoctorBookings({ entry, patients, registered, booked, taken, seenBy, clinicNow, today });
   }
 
   // the desk cancels a couple of still pending bookings today, which is both how a real board looks and
@@ -239,7 +251,8 @@ async function createAppointments(doctors, patients, receptionists) {
   return Appointment.insertMany([...rows, ...rebooked]);
 }
 
-function collectDoctorBookings({ doctor, spec, patients, registered, booked, seenBy, clinicNow, today }) {
+function collectDoctorBookings({ entry, patients, registered, booked, taken, seenBy, clinicNow, today }) {
+  const { doctor, spec } = entry;
   const showcaseDay = nextWorkingDay(spec, clinicNow);
 
   for (let offset = -PAST_DAYS; offset <= FUTURE_DAYS; offset += 1) {
@@ -259,19 +272,25 @@ function collectDoctorBookings({ doctor, spec, patients, registered, booked, see
       slotDurationMinutes: doctor.slotDurationMinutes,
     });
 
-    if (slots.length === 0) {
+    // a follow-up visit may already hold one of these, and a slot is never booked twice
+    const free = slots.filter((slot) => !isTaken(taken, doctor, date, slot));
+
+    if (free.length === 0) {
       continue;
     }
 
     const isShowcase = date === showcaseDay;
+    // busyness is a share of the slots the day has left, so the reviews that landed on the showcase day
+    // and the random fill still add up to the same 95 percent of the grid
     const target = isShowcase
-      ? Math.round(slots.length * SHOWCASE_BUSYNESS)
-      : Math.round(slots.length * spec.busyness * (0.85 + random() * 0.3));
+      ? Math.round(free.length * SHOWCASE_BUSYNESS)
+      : Math.round(free.length * spec.busyness * (0.85 + random() * 0.3));
 
-    for (const slot of takeSlots(slots, target)) {
-      const row = bookingRow({ doctor, spec, patients, registered, seenBy, clinicNow, today, date, slot, isShowcase });
+    for (const slot of takeSlots(free, target)) {
+      const row = bookingRow({ entry, patients, registered, seenBy, clinicNow, today, date, slot, isShowcase });
 
       if (row) {
+        taken.add(slotKey(doctor, date, slot));
         booked.push({ row, doctor, spec, date, slot });
       }
     }
@@ -279,7 +298,8 @@ function collectDoctorBookings({ doctor, spec, patients, registered, booked, see
 }
 
 // one booking, or null when nobody in that department could be in the pool for that day
-function bookingRow({ doctor, spec, patients, registered, seenBy, clinicNow, today, date, slot, isShowcase }) {
+function bookingRow({ entry, patients, registered, seenBy, clinicNow, today, date, slot, isShowcase }) {
+  const { doctor, spec } = entry;
   const dayStart = atClinicTime(date, '00:00');
   // a patient has to have been registered before the day of the visit, or the booking would predate the
   // person it belongs to
@@ -291,7 +311,23 @@ function bookingRow({ doctor, spec, patients, registered, seenBy, clinicNow, tod
     return null;
   }
 
-  const patient = pickPatient(pool, seenBy, doctor);
+  return appointmentRow({
+    entry,
+    patient: pickPatient(pool, seenBy, doctor),
+    purpose: pick(seedData.purposesByDept[spec.deptCode]),
+    date,
+    slot,
+    registered,
+    clinicNow,
+    today,
+    isShowcase,
+  });
+}
+
+// The row both booking paths write. The purpose is the only part they disagree on: a random visit takes
+// one from its department, a review keeps the one the patient is on the books for.
+function appointmentRow({ entry, patient, purpose, date, slot, registered, clinicNow, today, isShowcase }) {
+  const { doctor, spec } = entry;
   const status = statusFor({ date, today, isShowcase, slot, clinicNow });
   const stamps = timestampsFor({ status, date, slot, clinicNow });
 
@@ -303,14 +339,145 @@ function bookingRow({ doctor, spec, patients, registered, seenBy, clinicNow, tod
     startTime: slot.startTime,
     endTime: slot.endTime,
     status,
-    purpose: pick(seedData.purposesByDept[spec.deptCode]),
-    // about one visit in four carries a note, the way a real diary looks
-    ...(chance(0.25) ? { notes: pick(seedData.sampleNotes) } : {}),
+    purpose,
+    ...notesFor(spec.deptCode),
     ...snapshot(doctor, patient),
     createdBy: pick(registered),
     createdAt: bookedAt({ date, patient, clinicNow }).toJSDate(),
     ...stamps,
   };
+}
+
+// About two visits in five carry a note, and almost all of those are written for the department the visit
+// belongs to: a paediatric booking never gets an antenatal note. The rest are general desk notes that fit
+// anywhere, and half of all visits carry none at all.
+function notesFor(deptCode) {
+  const roll = random();
+  const departmentNotes = seedData.notesByDept[deptCode] || [];
+
+  if (roll < 0.4 && departmentNotes.length > 0) {
+    return { notes: pick(departmentNotes) };
+  }
+
+  if (roll >= 0.4 && roll < 0.5) {
+    return { notes: pick(seedData.sampleNotes) };
+  }
+
+  return {};
+}
+
+// A patient on a regular review comes back about every `everyDays` days. The cycle starts at an offset
+// drawn from the seeded generator, so two reviews with the same cadence still land on different days,
+// and each due date moves to the nearest day that doctor actually works before a free slot is taken from
+// the real generator.
+function bookFollowUpVisits({ doctors, patients, registered, taken, clinicNow, today }) {
+  const visits = [];
+  const doctorsByEmail = new Map(doctors.map((entry) => [entry.spec.email, entry]));
+  const firstDay = clinicNow.startOf('day').minus({ days: PAST_DAYS });
+  const lastDay = clinicNow.startOf('day').plus({ days: FUTURE_DAYS });
+
+  for (const patient of patients) {
+    const followUp = FOLLOW_UP_BY_MOBILE.get(patient.mobile);
+    const entry = followUp ? doctorsByEmail.get(followUp.doctorEmail) : null;
+
+    if (!entry) {
+      continue;
+    }
+
+    const showcaseDay = nextWorkingDay(entry.spec, clinicNow);
+    let due = firstDay.plus({ days: randInt(0, followUp.everyDays - 1) });
+
+    while (due <= lastDay) {
+      const visit = followUpVisit({ entry, patient, followUp, due, showcaseDay, registered, taken, clinicNow, today });
+
+      if (visit) {
+        visits.push(visit);
+      }
+
+      // the cadence follows the date the review was due, not the day it moved to, so it stays regular
+      due = due.plus({ days: followUp.everyDays });
+    }
+  }
+
+  return visits;
+}
+
+function followUpVisit({ entry, patient, followUp, due, showcaseDay, registered, taken, clinicNow, today }) {
+  const { doctor, spec } = entry;
+  const day = nearestWorkingDay(spec, due);
+  const firstDay = clinicNow.startOf('day').minus({ days: PAST_DAYS });
+  const lastDay = clinicNow.startOf('day').plus({ days: FUTURE_DAYS });
+
+  // a review that only fits by leaving the seeded range is not booked at all
+  if (!day || day < firstDay || day > lastDay) {
+    return null;
+  }
+
+  const date = day.toISODate();
+
+  // the same rule as every other visit: nobody is seen before the day they registered
+  if (patient.createdAt >= atClinicTime(date, '00:00').toJSDate()) {
+    return null;
+  }
+
+  const workingDay = scheduleFor(spec, day.weekday);
+  const free = generateSlots({
+    sessions: workingDay.sessions,
+    breaks: workingDay.breaks,
+    slotDurationMinutes: doctor.slotDurationMinutes,
+  }).filter((slot) => !isTaken(taken, doctor, date, slot));
+
+  // a day that is already full cannot hold the review; the next one keeps its own cadence
+  if (free.length === 0) {
+    return null;
+  }
+
+  const slot = pick(free);
+
+  taken.add(slotKey(doctor, date, slot));
+
+  return {
+    row: appointmentRow({
+      entry,
+      patient,
+      purpose: followUp.purpose,
+      date,
+      slot,
+      registered,
+      clinicNow,
+      today,
+      isShowcase: date === showcaseDay,
+    }),
+    doctor,
+    spec,
+    date,
+    slot,
+  };
+}
+
+// The closest date on which this doctor works, searched forwards first so a review that falls on a day off
+// moves later rather than earlier.
+function nearestWorkingDay(spec, day) {
+  for (let distance = 0; distance <= 7; distance += 1) {
+    const candidates = distance === 0 ? [day] : [day.plus({ days: distance }), day.minus({ days: distance })];
+
+    for (const candidate of candidates) {
+      if (scheduleFor(spec, candidate.weekday)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+// the key the partial unique index enforces: one active booking per doctor, date and start time
+function slotKey(doctor, date, slot) {
+  return `${doctor._id}|${date}|${slot.startTime}`;
+}
+
+function isTaken(taken, doctor, date, slot) {
+  return taken.has(slotKey(doctor, date, slot));
 }
 
 // Today is the one day a reviewer can watch change, so one or two of its bookings are cancelled with a

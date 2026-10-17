@@ -104,10 +104,14 @@ never travel over a second path with its own permission rules.
 `scripts/seedData.js` holds the made up names, hours and departments. `scripts/seed.js` only turns them
 into records. That way the demo can be changed by editing one file.
 
-No date is hardcoded. The window is built from the clinic's today, from 21 days back to 10 days ahead,
-and a fixed random seed means two runs on the same day produce almost the same clinic. Statuses follow the
-clock: a visit that ended this morning is completed, one happening now is arrived, and one next week is
-still scheduled.
+No date is hardcoded. The window is built from the clinic's today, from 45 days back to 14 days ahead, and
+a fixed random seed means two runs on the same day build the same diary. Statuses follow the clock: a
+visit that ended this morning is completed, one happening now is arrived, and one next week is still
+scheduled.
+
+The thirteen patients on a regular review are booked before anything random, each about every three or
+four weeks on the nearest day their doctor works, so a full diary can never crowd them out. Notes come
+from the visit's own department, or from the general desk list, and never from another department.
 
 ## What was left out, and why
 
