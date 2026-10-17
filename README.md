@@ -323,7 +323,7 @@ The Docker files, `docker-compose.yml`, `server/Dockerfile` and `client/Dockerfi
 ## Deploying
 
 The demo runs as three pieces: MongoDB Atlas for the database, a Render web service for the api, and
-GitHub Pages for the built client. The client is served from `https://pulsedesk.kamy.name.ng` and the api
+Vercel for the built client. The client is served from `https://pulsedesk.kamy.name.ng` and the api
 from `https://pulsedesk-api.kamy.name.ng`.
 
 ### Database: MongoDB Atlas
@@ -361,23 +361,27 @@ trusts the single proxy in front of it so the rate limiter sees the real client 
 Add the custom domain `pulsedesk-api.kamy.name.ng` to the service and point its CNAME at the hostname
 Render shows, which looks like `pulsedesk-api.onrender.com`.
 
-### Client: GitHub Pages
+### Client: Vercel
 
-Under Settings, Pages, set the source to GitHub Actions and the custom domain to
-`https://pulsedesk.kamy.name.ng`. Under Settings, Secrets and variables, Actions, Variables, add
-`VITE_API_URL` with the value `https://pulsedesk-api.kamy.name.ng`; the workflow fails with a sentence if
-it is missing. A push to `main` then installs and builds `client` and publishes `client/dist`, which
-includes the `404.html` copy that lets a deep link such as `/scheduler` survive a refresh. Only the client
-is published; the api and its secrets stay on Render.
+1. In Vercel, add a new project and import this repository.
+2. Set the Root Directory to `client`. Vercel then detects Vite, so the build command stays `npm run build`
+   and the output directory stays `dist`.
+3. Add the environment variable `VITE_API_URL` with the value `https://pulsedesk-api.kamy.name.ng`, for
+   both Production and Preview. It is read at build time, so changing it needs a redeploy.
+4. Deploy, then add the custom domain `pulsedesk.kamy.name.ng` under Settings, Domains.
+
+`client/vercel.json` rewrites every path to `/index.html`, so a deep link such as `/scheduler` survives a
+refresh while the real files under `/assets` are still served. Every push to `main` deploys; only the
+client is built there, and the api and its secrets stay on Render.
 
 ### DNS
 
-Two CNAME records, both at whoever answers for `kamy.name.ng`, and any older record with the same name
-has to go:
+Two CNAME records, both at whoever answers for `kamy.name.ng`, and the old `pulsedesk` record that
+pointed at `kams983.github.io` has to go:
 
 | Type | Name | Value | For |
 | --- | --- | --- | --- |
-| CNAME | `pulsedesk` | `kams983.github.io` | the client on GitHub Pages |
+| CNAME | `pulsedesk` | the per-project hostname Vercel shows, such as `d1d4fc829fe7bc7c.vercel-dns-017.com` | the client on Vercel |
 | CNAME | `pulsedesk-api` | `pulsedesk-api.onrender.com` | the api on Render |
 
 No A records are needed, because both names are subdomains. Each provider issues its certificate once the
