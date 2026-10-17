@@ -271,6 +271,7 @@ That call answers with 201. Booking a slot someone already holds is a 409. A tim
 | Name | Required | Example | Note |
 | --- | --- | --- | --- |
 | `VITE_API_TARGET` | no | `http://localhost:5000` | where the dev proxy sends api calls |
+| `VITE_API_URL` | no | `https://pulsedesk-api.kamy.name.ng` | the api origin, unset in development so calls stay relative, read by the production build |
 
 ## Installation Instructions
 
@@ -318,6 +319,77 @@ The eight suites are utils, health, errorHandler, models, slotGenerator, concurr
 Real-time updates use rooms. A receptionist or super admin joins the `staff` room on connect, a doctor joins their own `doctor-self` room, and a scheduler screen also joins `doctor:{doctorId}:{date}` for the day it is showing. The server sends `appointment:created`, `appointment:updated` and `appointment:cancelled` after the write has committed, each carrying only the id, doctor, date, start time and status. The client then refetches the rows it already knows how to render, so no patient data travels over the socket.
 
 The Docker files, `docker-compose.yml`, `server/Dockerfile` and `client/Dockerfile`, are written but have never been run on a machine with Docker.
+
+## Deploying
+
+The demo runs as three pieces: MongoDB Atlas for the database, a Render web service for the api, and
+GitHub Pages for the built client. The client is served from `https://pulsedesk.kamy.name.ng` and the api
+from `https://pulsedesk-api.kamy.name.ng`.
+
+### Database: MongoDB Atlas
+
+1. Create a free cluster, then a database user for the app.
+2. Under Network Access, allow `0.0.0.0/0`. Render's instances do not have a fixed outbound address, so
+   there is no smaller list that always works.
+3. From Connect, Drivers, copy the connection string and put it in `MONGO_URI` with the database name
+   added, for example `mongodb+srv://<user>:<password>@<cluster>.mongodb.net/pulsedesk?retryWrites=true&w=majority`.
+
+### API: Render
+
+Create a Web Service from this repository with:
+
+| Setting | Value |
+| --- | --- |
+| Root directory | `server` |
+| Build command | `npm install` |
+| Start command | `npm start` |
+
+Environment (the names and production values are also in `server/.env.example`):
+
+| Name | Value |
+| --- | --- |
+| `NODE_ENV` | `production` |
+| `MONGO_URI` | the Atlas connection string |
+| `JWT_ACCESS_SECRET` | a fresh random string of 32 characters or more |
+| `CLIENT_ORIGIN` | `https://pulsedesk.kamy.name.ng` |
+| `CLINIC_TIMEZONE` | `Africa/Lagos` |
+
+`PORT` is left alone: Render provides it and the server reads it. In production the refresh cookie is
+`Secure` and `SameSite=Lax`, `CLIENT_ORIGIN` is the one origin CORS and the socket allow, and the app
+trusts the single proxy in front of it so the rate limiter sees the real client ip.
+
+Add the custom domain `pulsedesk-api.kamy.name.ng` to the service and point its CNAME at the hostname
+Render shows, which looks like `pulsedesk-api.onrender.com`.
+
+### Client: GitHub Pages
+
+Under Settings, Pages, set the source to GitHub Actions and the custom domain to
+`https://pulsedesk.kamy.name.ng`. Under Settings, Secrets and variables, Actions, Variables, add
+`VITE_API_URL` with the value `https://pulsedesk-api.kamy.name.ng`; the workflow fails with a sentence if
+it is missing. A push to `main` then installs and builds `client` and publishes `client/dist`, which
+includes the `404.html` copy that lets a deep link such as `/scheduler` survive a refresh. Only the client
+is published; the api and its secrets stay on Render.
+
+### DNS
+
+Two CNAME records, both at whoever answers for `kamy.name.ng`, and any older record with the same name
+has to go:
+
+| Type | Name | Value | For |
+| --- | --- | --- | --- |
+| CNAME | `pulsedesk` | `kams983.github.io` | the client on GitHub Pages |
+| CNAME | `pulsedesk-api` | `pulsedesk-api.onrender.com` | the api on Render |
+
+No A records are needed, because both names are subdomains. Each provider issues its certificate once the
+record resolves, which can take a few minutes.
+
+### Seeding Atlas once
+
+The seed script fills the deployed database with the demo clinic and its logins. Point a local
+`server/.env` at Atlas and run it once from the repository root with `npm run seed`. It empties the
+collections it owns, so never point it at data you want to keep, and it refuses to run under
+`NODE_ENV=production` unless it is given `--force`, which a local run does not need. The demo dates are
+built from the clinic's today, so running it again later refreshes the "today" boards.
 
 ## Assumptions Made
 
