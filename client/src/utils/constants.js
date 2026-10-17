@@ -10,8 +10,6 @@ import {
   UserCheck,
 } from 'lucide-react';
 
-export const APP_NAME = 'PulseDesk';
-
 // The product name, in one place: the wordmark, the login card and the browser tab titles all read it,
 // so the name can never be typed twice and disagree with itself.
 export const APP_NAME = 'PulseDesk';

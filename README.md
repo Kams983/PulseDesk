@@ -143,7 +143,7 @@ Base path `/api/v1`. Every response is `{ success, message, data, meta }`; error
 POST /api/v1/auth/login
 Content-Type: application/json
 
-{ "email": "reception@pulse.test", "password": "Password123!" }
+{ "email": "reception@emr.test", "password": "Password123!" }
 ```
 
 ```json

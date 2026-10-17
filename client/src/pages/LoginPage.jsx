@@ -10,7 +10,8 @@ import Spinner from '@/components/ui/Spinner';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
-import { APP_NAME, firstName } from '@/utils/formatters';
+import { APP_NAME } from '@/utils/constants';
+import { firstName } from '@/utils/formatters';
 
 // the same accounts the seed creates, so a reviewer can sign in as each role without typing
 const DEMO_PASSWORD = 'Password123!';
