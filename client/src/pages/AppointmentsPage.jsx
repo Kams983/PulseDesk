@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ClipboardList } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
@@ -28,9 +28,10 @@ import { pluralize } from '@/utils/formatters';
 const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointment:cancelled'];
 const PAGE_SIZES = [10, 20, 50];
 
-// The URL is the state, so a refresh, a bookmark and a link to a colleague all land on the same list.
+// The URL holds the filters, so a refresh or a shared link shows the same list.
 function readFilters(params) {
   const limit = Number(params.get('limit'));
+  const sortBy = params.get('sortBy');
 
   return {
     q: params.get('q') || '',
@@ -41,8 +42,8 @@ function readFilters(params) {
     status: params.get('status') || '',
     dateFrom: params.get('dateFrom') || '',
     dateTo: params.get('dateTo') || '',
-    // a sort field the api does not accept would be a 400, so anything unknown falls back to the default
-    sortBy: APPOINTMENT_SORT_FIELDS.includes(params.get('sortBy')) ? params.get('sortBy') : 'date',
+    // the api rejects an unknown sort field, so only known ones are used
+    sortBy: APPOINTMENT_SORT_FIELDS.includes(sortBy) ? sortBy : 'date',
     sortOrder: params.get('sortOrder') === 'desc' ? 'desc' : 'asc',
     page: Math.max(Number(params.get('page')) || 1, 1),
     limit: PAGE_SIZES.includes(limit) ? limit : 10,
@@ -67,13 +68,13 @@ export default function AppointmentsPage() {
   const today = board.data?.today;
 
   const departments = useQuery({ queryKey: ['departments'], queryFn: listDepartments, staleTime: 30 * 60_000 });
-  // the same query the scheduler's "all departments" view caches, so the two screens share one entry
+  // the scheduler uses the same query, so both screens share the cached list
   const doctors = useQuery({ queryKey: ['doctors', ''], queryFn: () => listDoctors() });
 
   const list = useQuery({
     queryKey: ['appointments', { q, mobile, doctor, doctorId, departmentId, status, dateFrom, dateTo, sortBy, sortOrder, page, limit }],
     queryFn: () => listAppointments({ q, mobile, doctor, doctorId, departmentId, status, dateFrom, dateTo, sortBy, sortOrder, page, limit }),
-    // the previous page stays on screen while the next one loads, so paging does not flash a skeleton
+    // keep the old rows visible while the next page loads
     placeholderData: keepPreviousData,
   });
 
@@ -82,29 +83,25 @@ export default function AppointmentsPage() {
   const departmentNames = new Map((departments.data || []).map((entry) => [entry.id, entry.name]));
   const selected = active ? appointments.find((appointment) => appointment.id === active.id) || null : null;
 
-  // one entry point for the filters and the shortcuts; a changed filter always goes back to page one,
-  // because page four of the old result set is not a place the new one has
+  // Every filter change also goes back to page one, because the old page may not exist in the new list.
   function applyFilters(patch) {
-    setParams(
-      (current) => {
-        const next = new URLSearchParams(current);
+    const next = new URLSearchParams(params);
 
-        for (const [key, value] of Object.entries(patch)) {
-          if (value === '' || value === undefined || value === null) {
-            next.delete(key);
-          } else {
-            next.set(key, String(value));
-          }
-        }
+    for (const key of Object.keys(patch)) {
+      const value = patch[key];
 
-        if (!('page' in patch)) {
-          next.delete('page');
-        }
+      if (value === '' || value === undefined || value === null) {
+        next.delete(key);
+      } else {
+        next.set(key, String(value));
+      }
+    }
 
-        return next;
-      },
-      { replace: true }
-    );
+    if (!('page' in patch)) {
+      next.delete('page');
+    }
+
+    setParams(next, { replace: true });
   }
 
   function clearFilters() {
@@ -112,49 +109,42 @@ export default function AppointmentsPage() {
   }
 
   function toggleSort(key) {
-    setParams(
-      (current) => {
-        const next = new URLSearchParams(current);
-        const isSame = (current.get('sortBy') || 'date') === key;
+    const next = new URLSearchParams(params);
+    const sameColumn = (params.get('sortBy') || 'date') === key;
+    const isAscending = (params.get('sortOrder') || 'asc') === 'asc';
 
-        next.set('sortBy', key);
-        // clicking the column that is already sorted flips the direction, which is what an arrow implies
-        next.set('sortOrder', isSame && (current.get('sortOrder') || 'asc') === 'asc' ? 'desc' : 'asc');
-        next.delete('page');
+    next.set('sortBy', key);
+    // clicking the sorted column again flips the direction
+    next.set('sortOrder', sameColumn && isAscending ? 'desc' : 'asc');
+    next.delete('page');
 
-        return next;
-      },
-      { replace: true }
-    );
+    setParams(next, { replace: true });
   }
 
-  const arriveMutation = useMutation({
-    mutationFn: (id) => arriveAppointment(id),
+  function refreshLists() {
+    queryClient.invalidateQueries({ queryKey: ['appointments'] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['slots'] });
+  }
+
+  const arrive = useMutation({
+    mutationFn: arriveAppointment,
     onSuccess: (appointment) => {
       toast.success(`Marked ${appointment.patient.name} as arrived`);
-      queryClient.invalidateQueries({ queryKey: ['appointments'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['slots'] });
+      refreshLists();
     },
     onError: (error) => toast.error(error.message),
   });
 
-  const completeMutation = useMutation({
-    mutationFn: (id) => completeAppointment(id),
+  const complete = useMutation({
+    mutationFn: completeAppointment,
     onSuccess: (appointment) => {
       toast.success(`Completed ${appointment.patient.name}'s visit`);
-      queryClient.invalidateQueries({ queryKey: ['appointments'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['slots'] });
+      refreshLists();
     },
     onError: (error) => toast.error(error.message),
   });
 
-  const { mutate: markArrived } = arriveMutation;
-  const { mutate: completeVisit } = completeMutation;
-
-  // the server broadcasts to the staff room and to each doctor's own room, so refetching the current
-  // query is what every list needs on any change it is allowed to see
   useEffect(() => {
     if (!socket) {
       return undefined;
@@ -170,25 +160,20 @@ export default function AppointmentsPage() {
     return () => REALTIME_EVENTS.forEach((event) => socket.off(event, onAppointmentEvent));
   }, [socket, queryClient]);
 
-  // The table and the card list both hand their clicks through here, so the two layouts cannot drift
-  // apart. Two of the five actions run at once and three open a dialog. Kept stable so a memoised row
-  // is skipped while a filter is being typed.
-  const runAction = useCallback(
-    (action, id) => {
-      if (action === 'arrive') {
-        markArrived(id);
-        return;
-      }
+  // The table and the cards both use this, so they always do the same thing.
+  function runAction(action, id) {
+    if (action === 'arrive') {
+      arrive.mutate(id);
+      return;
+    }
 
-      if (action === 'complete') {
-        completeVisit(id);
-        return;
-      }
+    if (action === 'complete') {
+      complete.mutate(id);
+      return;
+    }
 
-      setActive({ action, id });
-    },
-    [markArrived, completeVisit]
-  );
+    setActive({ action, id });
+  }
 
   const isEmpty = !list.isPending && appointments.length === 0;
   const isFiltered = Boolean(q || mobile || doctor || doctorId || departmentId || status || dateFrom || dateTo);
@@ -237,7 +222,6 @@ export default function AppointmentsPage() {
           />
         ) : (
           <>
-            {/* one layout is rendered, not both: the other would be rows of dom that nobody sees */}
             {isWide ? (
               <AppointmentsTable
                 appointments={appointments}

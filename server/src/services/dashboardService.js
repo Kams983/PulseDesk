@@ -7,25 +7,25 @@ const { nowInClinicTz } = require('../utils/time');
 const doctorService = require('./doctorService');
 
 const DEFAULT_TREND_DAYS = 7;
-// a doctor's diary is a day, so the next patient is always inside the first handful of live rows
+// a doctor's next patient is always near the top of their open visits
 const NEXT_PATIENT_SCAN = 50;
 
-// `today` is the clinic's calendar date and the only clock the client trusts, so a browser in another
-// timezone cannot disagree with the server about what is past.
+// The dashboard reads the time on the server, so a browser in another timezone still agrees with it.
 async function getDashboard(user) {
-  const clinicNow = nowInClinicTz();
-  const today = clinicNow.toISODate();
+  const now = nowInClinicTz();
+  const today = now.toISODate();
 
   if (user.role === ROLES.DOCTOR) {
-    return doctorDashboard(user, today, clinicNow);
+    return doctorDashboard(user, today, now);
   }
 
   return clinicDashboard(today, user.role);
 }
 
-// the desk board is today's counts, plus the register broken down per doctor for a super admin
+// For the desk: today's counts, plus a breakdown per doctor for the super admin.
 async function clinicDashboard(today, role) {
-  const counts = shapeCounts(await groupByStatus({ date: today }, today), true);
+  const rows = await groupByStatus({ date: today }, today);
+  const counts = shapeCounts(rows, true);
   const board = { scope: 'clinic', today, counts: { today: counts } };
 
   if (role !== ROLES.SUPER_ADMIN) {
@@ -37,12 +37,12 @@ async function clinicDashboard(today, role) {
   return { ...board, doctors, byDoctor };
 }
 
-async function doctorDashboard(user, today, clinicNow) {
+async function doctorDashboard(user, today, now) {
   const own = await ownDoctor(user);
 
-  // today and everything still ahead come back from one pass, split by a flag inside the group key
+  // one query gives us today and everything still ahead
   const rows = await groupByStatus({ doctorId: own._id, date: { $gte: today } }, today);
-  const next = await nextAppointment(own._id, today, clinicNow);
+  const next = await nextAppointment(own._id, today, now);
 
   return {
     scope: 'own',
@@ -52,19 +52,29 @@ async function doctorDashboard(user, today, clinicNow) {
       today: shapeCounts(rows, true),
       upcoming: shapeCounts(rows, false),
     },
-    next: next ? toNextPatientDto(next) : null,
+    next: next ? toNextPatient(next) : null,
   };
 }
 
-// one line per doctor, every doctor included, so a free day reads as a zero rather than as missing
+// One row per doctor, including the doctors with nothing today.
 async function doctorBreakdown(today) {
   const [rows, doctors] = await Promise.all([
-    Appointment.aggregate([{ $match: { date: today } }, { $group: { _id: { doctorId: '$doctorId', status: '$status' }, count: { $sum: 1 } } }]),
+    Appointment.aggregate([
+      { $match: { date: today } },
+      { $group: { _id: { doctorId: '$doctorId', status: '$status' }, count: { $sum: 1 } } },
+    ]),
     Doctor.find({}).select('name').sort({ nameLower: 1 }).lean(),
   ]);
-  const byDoctor = new Map(
-    doctors.map((doctor) => [doctor._id.toString(), { id: doctor._id.toString(), name: doctor.name, counts: emptyCounts() }])
-  );
+
+  const byDoctor = new Map();
+
+  for (const doctor of doctors) {
+    byDoctor.set(doctor._id.toString(), {
+      id: doctor._id.toString(),
+      name: doctor.name,
+      counts: emptyCounts(),
+    });
+  }
 
   for (const row of rows) {
     const entry = byDoctor.get(row._id.doctorId.toString());
@@ -80,10 +90,9 @@ async function doctorBreakdown(today) {
   return [...byDoctor.values()];
 }
 
-// who the doctor should look up when the board opens: someone already waiting comes first, then the
-// earliest visit that has not finished yet. Both questions need the clock, which lives on the server.
-async function nextAppointment(doctorId, today, clinicNow) {
-  const live = await Appointment.find({
+// Who the doctor should look up: someone already waiting first, then the next visit that has not ended.
+async function nextAppointment(doctorId, today, now) {
+  const visits = await Appointment.find({
     doctorId,
     date: { $gte: today },
     status: { $in: [APPOINTMENT_STATUS.ARRIVED, APPOINTMENT_STATUS.SCHEDULED] },
@@ -93,20 +102,19 @@ async function nextAppointment(doctorId, today, clinicNow) {
     .select('patientId date startTime endTime status purpose patientSnapshot arrivedAt')
     .lean();
 
-  const waiting = live.find((row) => row.status === APPOINTMENT_STATUS.ARRIVED);
+  const waiting = visits.find((visit) => visit.status === APPOINTMENT_STATUS.ARRIVED);
 
   if (waiting) {
     return waiting;
   }
 
-  const nowTime = clinicNow.toFormat('HH:mm');
+  // a visit that already ended was never closed by the desk, so it is not next
+  const currentTime = now.toFormat('HH:mm');
 
-  // a slot that has already ended was never closed by the desk, so it is history rather than a queue
-  return live.find((row) => row.date > today || row.endTime >= nowTime) || null;
+  return visits.find((visit) => visit.date > today || visit.endTime >= currentTime) || null;
 }
 
-// only what the next patient card renders, never the row itself
-function toNextPatientDto(appointment) {
+function toNextPatient(appointment) {
   return {
     id: appointment._id.toString(),
     date: appointment.date,
@@ -124,8 +132,7 @@ function toNextPatientDto(appointment) {
   };
 }
 
-// one aggregation groups the board by status. Six separate counts would be six round trips for numbers
-// that only add up if they all describe the same moment.
+// One query groups the board by status instead of running a count per status.
 function groupByStatus(match, today) {
   return Appointment.aggregate([
     { $match: match },
@@ -141,7 +148,7 @@ function shapeCounts(rows, isToday) {
       continue;
     }
 
-    // a cancelled visit belongs to today's board but it is not something still coming up
+    // a cancelled visit is on today's board but is not still coming up
     if (!isToday && row._id.status === APPOINTMENT_STATUS.CANCELLED) {
       continue;
     }
@@ -153,33 +160,17 @@ function shapeCounts(rows, isToday) {
   return counts;
 }
 
-// One entry per day, oldest first, ending today. The database only holds days that saw an appointment,
-// so the empty days are filled in afterwards.
+// One entry per day, ending today. Days with no appointments are filled in as zeros.
 async function getTrend(days, user) {
-  const clinicNow = nowInClinicTz();
-  const today = clinicNow.toISODate();
-  const countsByDate = await countByDateAndStatus(trendRange(days, clinicNow, today), user);
-  const trend = [];
+  const now = nowInClinicTz();
+  const today = now.toISODate();
+  const firstDay = now.minus({ days: days - 1 }).toISODate();
 
-  // the range is rebuilt from the clinic clock rather than from the rows, so a gap shows as a zero
-  for (let offset = days - 1; offset >= 0; offset -= 1) {
-    const date = clinicNow.minus({ days: offset }).toISODate();
-
-    trend.push({ date, ...(countsByDate.get(date) || emptyCounts()) });
-  }
-
-  return { scope: scopeFor(user), today, days, trend };
-}
-
-function trendRange(days, clinicNow, today) {
-  return { date: { $gte: clinicNow.minus({ days: days - 1 }).toISODate(), $lte: today } };
-}
-
-async function countByDateAndStatus(match, user) {
   const rows = await Appointment.aggregate([
-    { $match: await withDoctorScope(match, user) },
+    { $match: await addDoctorScope({ date: { $gte: firstDay, $lte: today } }, user) },
     { $group: { _id: { date: '$date', status: '$status' }, count: { $sum: 1 } } },
   ]);
+
   const countsByDate = new Map();
 
   for (const row of rows) {
@@ -190,17 +181,41 @@ async function countByDateAndStatus(match, user) {
     countsByDate.set(row._id.date, counts);
   }
 
-  return countsByDate;
+  const trend = [];
+
+  // we walk the days ourselves, so a day with no appointments still appears
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const date = now.minus({ days: offset }).toISODate();
+
+    trend.push({ date, ...(countsByDate.get(date) || emptyCounts()) });
+  }
+
+  return { scope: scopeFor(user), today, days, trend };
 }
 
-// One number per day of the month the calendar is showing, zero filled, so the mini calendar can put a
-// dot under the days that hold appointments without asking a question per cell.
+// One number per day of the month, so the mini calendar can show its dots.
 async function getCalendar(user, month = nowInClinicTz().toFormat('yyyy-MM')) {
   const start = DateTime.fromFormat(month, 'yyyy-MM', { zone: 'utc' });
-  const totalsByDate = await countByDate(monthRange(start), user);
+
+  const rows = await Appointment.aggregate([
+    {
+      $match: await addDoctorScope(
+        { date: { $gte: start.startOf('month').toISODate(), $lte: start.endOf('month').toISODate() } },
+        user
+      ),
+    },
+    { $group: { _id: '$date', total: { $sum: 1 } } },
+  ]);
+
+  const totalsByDate = new Map();
+
+  for (const row of rows) {
+    totalsByDate.set(row._id, row.total);
+  }
+
   const days = [];
 
-  // the month is walked from the calendar rather than from the rows, so an empty day still comes back
+  // the month comes from the calendar, so an empty day is still listed
   for (let date = start.startOf('month'); date <= start.endOf('month'); date = date.plus({ days: 1 })) {
     const iso = date.toISODate();
 
@@ -210,21 +225,8 @@ async function getCalendar(user, month = nowInClinicTz().toFormat('yyyy-MM')) {
   return { scope: scopeFor(user), month, days };
 }
 
-function monthRange(start) {
-  return { date: { $gte: start.startOf('month').toISODate(), $lte: start.endOf('month').toISODate() } };
-}
-
-async function countByDate(match, user) {
-  const rows = await Appointment.aggregate([
-    { $match: await withDoctorScope(match, user) },
-    { $group: { _id: '$date', total: { $sum: 1 } } },
-  ]);
-
-  return new Map(rows.map((row) => [row._id, row.total]));
-}
-
-// a doctor only ever sees their own board, everyone else sees the clinic
-async function withDoctorScope(match, user) {
+// A doctor only sees their own appointments.
+async function addDoctorScope(match, user) {
   if (user.role !== ROLES.DOCTOR) {
     return match;
   }

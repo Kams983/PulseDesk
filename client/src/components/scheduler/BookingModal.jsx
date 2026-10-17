@@ -19,8 +19,8 @@ const TABS = [
   { key: 'new', label: 'New patient' },
 ];
 
-// permissive on purpose: the desk types what the caller reads out, spaces and dashes included. The
-// number is normalised before it is sent, so the server still validates bare digits.
+// The desk types the number as the caller reads it, so spaces and dashes are allowed here and removed
+// before the request. The server still checks for plain digits.
 const MOBILE_PATTERN = /^\+?[\d\s-]{7,20}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const GENDERS = [
@@ -32,8 +32,7 @@ const GENDERS = [
 
 const EMPTY = { patientId: '', name: '', mobile: '', gender: '', dateOfBirth: '', purpose: '', notes: '' };
 
-// two shapes of the same booking: an identified patient, or one registered on the spot. Only the
-// patient half differs, so purpose and notes are shared and a tab switch never loses them.
+// Both tabs share the purpose and the notes; only the patient part is different.
 const existingSchema = z.object({
   patientId: z.string().min(1, 'Choose a patient'),
   purpose: z.string().trim().max(200).optional(),
@@ -54,7 +53,7 @@ export default function BookingModal({ doctor, date, slot, onClose, onBooked }) 
   const queryClient = useQueryClient();
   const [tab, setTab] = useState('existing');
   const [patient, setPatient] = useState(null);
-  // the two conflicts the api answers with, kept apart because they need two different answers
+  // the api can answer with a duplicate patient or with a taken slot, and the two need different answers
   const [duplicate, setDuplicate] = useState(null);
   const [conflict, setConflict] = useState('');
   const [formError, setFormError] = useState('');
@@ -76,7 +75,7 @@ export default function BookingModal({ doctor, date, slot, onClose, onBooked }) 
     setDuplicate(null);
     setFormError('');
     clearErrors();
-    // purpose and notes belong to the booking, not to the patient half, so they survive the switch
+    // purpose and notes stay, because they belong to the booking and not to the patient
     reset({ ...getValues(), patientId: next === 'existing' && patient ? patient.id : '' });
   }
 
@@ -92,9 +91,8 @@ export default function BookingModal({ doctor, date, slot, onClose, onBooked }) 
     setValue('patientId', '');
   }
 
-  // The desk keeps the patient it just typed instead of retyping it on the other tab: the api hands the
-  // existing record back inside the error, so this is a switch of tab and nothing more. The reset has to
-  // carry the patient id itself, otherwise the dialog would show a patient and then refuse to submit.
+  // The api sends the existing patient back with the error, so the desk can keep what it typed and just
+  // switch tabs instead of filling the form in again.
   function useExistingPatient(existing) {
     setTab('existing');
     setPatient(existing);
@@ -112,48 +110,56 @@ export default function BookingModal({ doctor, date, slot, onClose, onBooked }) 
       doctorId: doctor.id,
       date,
       startTime: slot.startTime,
-      ...(values.purpose ? { purpose: values.purpose } : {}),
-      ...(values.notes ? { notes: values.notes } : {}),
-      ...(tab === 'existing'
-        ? { patientId: values.patientId }
-        : {
-            newPatient: {
-              name: values.name,
-              mobile: values.mobile.replace(/[\s-]/g, ''),
-              ...(values.gender ? { gender: values.gender } : {}),
-              ...(values.dateOfBirth ? { dateOfBirth: values.dateOfBirth } : {}),
-            },
-          }),
     };
+
+    if (values.purpose) {
+      payload.purpose = values.purpose;
+    }
+
+    if (values.notes) {
+      payload.notes = values.notes;
+    }
+
+    if (tab === 'existing') {
+      payload.patientId = values.patientId;
+    } else {
+      payload.newPatient = {
+        name: values.name,
+        mobile: values.mobile.replace(/[\s-]/g, ''),
+      };
+
+      if (values.gender) {
+        payload.newPatient.gender = values.gender;
+      }
+
+      if (values.dateOfBirth) {
+        payload.newPatient.dateOfBirth = values.dateOfBirth;
+      }
+    }
 
     try {
       await book.mutateAsync(payload);
       toast.success(`Booked ${formatTime(slot.startTime)} for ${tab === 'existing' ? patient.name : values.name}`);
       onBooked();
     } catch (error) {
-      handleFailure(error);
+      const existing = error.details?.find((detail) => detail.existingPatient)?.existingPatient;
+
+      if (existing) {
+        // the mobile number is already registered, so offer that record
+        setDuplicate(existing);
+        return;
+      }
+
+      if (error.status === 409) {
+        // someone else took the slot, so the grid behind the dialog is out of date
+        setConflict(error.message);
+        queryClient.invalidateQueries({ queryKey: ['slots', doctor.id, date] });
+        queryClient.invalidateQueries({ queryKey: ['appointments', 'day', doctor.id, date] });
+        return;
+      }
+
+      setFormError(error.message);
     }
-  }
-
-  function handleFailure(error) {
-    const existing = error.details?.find((detail) => detail.existingPatient)?.existingPatient;
-
-    if (existing) {
-      // the mobile number is already on the register: offer the record instead of a dead end
-      setDuplicate(existing);
-      return;
-    }
-
-    if (error.status === 409) {
-      // someone took the slot between the click and the submit, so the grid behind the dialog is stale.
-      // It is refreshed now and the desk only has to acknowledge before the dialog closes.
-      setConflict(error.message);
-      queryClient.invalidateQueries({ queryKey: ['slots', doctor.id, date] });
-      queryClient.invalidateQueries({ queryKey: ['appointments', 'day', doctor.id, date] });
-      return;
-    }
-
-    setFormError(error.message);
   }
 
   return (
@@ -169,8 +175,7 @@ export default function BookingModal({ doctor, date, slot, onClose, onBooked }) 
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            {/* the button lives in the footer but submits the form above it, which keeps one action in one
-                place without putting the action inside the scrollable body */}
+            {/* the button sits in the footer but submits the form above it */}
             <Button type="submit" form="booking-form" loading={isPending} disabled={book.isPending}>
               Confirm booking
             </Button>
@@ -178,139 +183,117 @@ export default function BookingModal({ doctor, date, slot, onClose, onBooked }) 
         )
       }
     >
-      <SlotSummary doctor={doctor} date={date} slot={slot} />
+      <div className="rounded-card bg-page px-4 py-3">
+        <p className="text-sm font-semibold text-ink">
+          {doctor.name} · {doctor.department.name}
+        </p>
+        <p className="mt-0.5 text-sm text-ink-muted">
+          {formatDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} · {formatTime(slot.startTime)}-
+          {formatTime(slot.endTime)} · {pluralize(doctor.slotDurationMinutes, 'minute')} slots
+        </p>
+      </div>
 
       {conflict ? (
-        <ConflictNotice message={conflict} />
+        <div className="mt-4 flex items-start gap-3 rounded-card bg-danger-tint px-4 py-3">
+          <TriangleAlert size={18} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" />
+          <div>
+            <p className="text-sm font-semibold text-danger">That slot has just been taken</p>
+            <p className="mt-0.5 text-sm text-danger">{conflict} The grid behind this dialog has been refreshed.</p>
+          </div>
+        </div>
       ) : (
         <>
-          <PatientTabs tab={tab} onChange={switchTab} />
+          <div className="mt-4 flex gap-1 rounded-pill bg-page p-1" role="tablist">
+            {TABS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.key}
+                onClick={() => switchTab(item.key)}
+                className={`flex flex-1 items-center justify-center gap-2 rounded-pill px-3 py-2 text-sm font-semibold transition ${
+                  tab === item.key ? 'bg-card text-ink shadow-card' : 'text-ink-muted hover:text-ink'
+                }`}
+              >
+                {item.key === 'new' ? (
+                  <UserPlus size={15} aria-hidden="true" />
+                ) : (
+                  <BadgeCheck size={15} aria-hidden="true" />
+                )}
+                {item.label}
+              </button>
+            ))}
+          </div>
 
           <form id="booking-form" className="mt-4 space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
-            <DuplicateNotice duplicate={duplicate} onUse={useExistingPatient} />
-            {formError ? <FormError message={formError} /> : null}
+            {duplicate ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-card bg-arrived-tint px-4 py-3">
+                <TriangleAlert size={18} className="shrink-0 text-arrived" aria-hidden="true" />
+                <p className="flex-1 text-sm text-arrived">
+                  A patient with this number already exists: {duplicate.name}
+                </p>
+                <Button size="sm" variant="secondary" onClick={() => useExistingPatient(duplicate)}>
+                  Use {duplicate.patientCode}
+                </Button>
+              </div>
+            ) : null}
+
+            {formError ? (
+              <p className="flex items-start gap-2 rounded-card bg-danger-tint px-4 py-3 text-sm text-danger">
+                <TriangleAlert size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                {formError}
+              </p>
+            ) : null}
 
             {tab === 'existing' ? (
-              <ExistingPatientFields
-                register={register}
-                errors={formState.errors}
-                patient={patient}
-                onChoosePatient={choosePatient}
-                onClearPatient={clearPatient}
-              />
+              <>
+                {/* the id is part of the form so one schema can check both tabs */}
+                <input type="hidden" {...register('patientId')} />
+                <PatientPicker selected={patient} onSelect={choosePatient} onClear={clearPatient} />
+                {formState.errors.patientId ? (
+                  <p className="text-xs text-danger">{formState.errors.patientId.message}</p>
+                ) : null}
+              </>
             ) : (
-              <NewPatientFields register={register} errors={formState.errors} />
+              <>
+                <Input label="Full name" error={formState.errors.name?.message} autoComplete="off" {...register('name')} />
+                <Input
+                  label="Mobile number"
+                  inputMode="tel"
+                  placeholder="08031234567"
+                  helper="Spaces and dashes are fine."
+                  error={formState.errors.mobile?.message}
+                  {...register('mobile')}
+                />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Select label="Gender" options={GENDERS} error={formState.errors.gender?.message} {...register('gender')} />
+                  <Input
+                    type="date"
+                    label="Date of birth"
+                    helper="Optional."
+                    error={formState.errors.dateOfBirth?.message}
+                    {...register('dateOfBirth')}
+                  />
+                </div>
+              </>
             )}
 
-            <Input label="Purpose" placeholder="Follow up consultation" error={formState.errors.purpose?.message} {...register('purpose')} />
-            <Textarea label="Notes" rows={2} placeholder="Anything the doctor should know" error={formState.errors.notes?.message} {...register('notes')} />
+            <Input
+              label="Purpose"
+              placeholder="Follow up consultation"
+              error={formState.errors.purpose?.message}
+              {...register('purpose')}
+            />
+            <Textarea
+              label="Notes"
+              rows={2}
+              placeholder="Anything the doctor should know"
+              error={formState.errors.notes?.message}
+              {...register('notes')}
+            />
           </form>
         </>
       )}
     </Modal>
-  );
-}
-
-function SlotSummary({ doctor, date, slot }) {
-  return (
-    <div className="rounded-card bg-page px-4 py-3">
-      <p className="text-sm font-semibold text-ink">
-        {doctor.name} · {doctor.department.name}
-      </p>
-      <p className="mt-0.5 text-sm text-ink-muted">
-        {formatDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} · {formatTime(slot.startTime)}-
-        {formatTime(slot.endTime)} · {pluralize(doctor.slotDurationMinutes, 'minute')} slots
-      </p>
-    </div>
-  );
-}
-
-function PatientTabs({ tab, onChange }) {
-  return (
-    <div className="mt-4 flex gap-1 rounded-pill bg-page p-1" role="tablist">
-      {TABS.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          role="tab"
-          aria-selected={tab === item.key}
-          onClick={() => onChange(item.key)}
-          className={`flex flex-1 items-center justify-center gap-2 rounded-pill px-3 py-2 text-sm font-semibold transition ${
-            tab === item.key ? 'bg-card text-ink shadow-card' : 'text-ink-muted hover:text-ink'
-          }`}
-        >
-          {item.key === 'new' ? <UserPlus size={15} aria-hidden="true" /> : <BadgeCheck size={15} aria-hidden="true" />}
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ConflictNotice({ message }) {
-  return (
-    <div className="mt-4 flex items-start gap-3 rounded-card bg-danger-tint px-4 py-3">
-      <TriangleAlert size={18} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" />
-      <div>
-        <p className="text-sm font-semibold text-danger">That slot has just been taken</p>
-        <p className="mt-0.5 text-sm text-danger">{message} The grid behind this dialog has been refreshed.</p>
-      </div>
-    </div>
-  );
-}
-
-function DuplicateNotice({ duplicate, onUse }) {
-  if (!duplicate) {
-    return null;
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-3 rounded-card bg-arrived-tint px-4 py-3">
-      <TriangleAlert size={18} className="shrink-0 text-arrived" aria-hidden="true" />
-      <p className="flex-1 text-sm text-arrived">A patient with this number already exists: {duplicate.name}</p>
-      <Button size="sm" variant="secondary" onClick={() => onUse(duplicate)}>
-        Use {duplicate.patientCode}
-      </Button>
-    </div>
-  );
-}
-
-function FormError({ message }) {
-  return (
-    <p className="flex items-start gap-2 rounded-card bg-danger-tint px-4 py-3 text-sm text-danger">
-      <TriangleAlert size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-      {message}
-    </p>
-  );
-}
-
-function ExistingPatientFields({ register, errors, patient, onChoosePatient, onClearPatient }) {
-  return (
-    <>
-      {/* the id travels with the form so the same schema guards both tabs */}
-      <input type="hidden" {...register('patientId')} />
-      <PatientPicker selected={patient} onSelect={onChoosePatient} onClear={onClearPatient} />
-      {errors.patientId ? <p className="text-xs text-danger">{errors.patientId.message}</p> : null}
-    </>
-  );
-}
-
-function NewPatientFields({ register, errors }) {
-  return (
-    <>
-      <Input label="Full name" error={errors.name?.message} autoComplete="off" {...register('name')} />
-      <Input
-        label="Mobile number"
-        inputMode="tel"
-        placeholder="08031234567"
-        helper="Spaces and dashes are fine."
-        error={errors.mobile?.message}
-        {...register('mobile')}
-      />
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Select label="Gender" options={GENDERS} error={errors.gender?.message} {...register('gender')} />
-        <Input type="date" label="Date of birth" helper="Optional." error={errors.dateOfBirth?.message} {...register('dateOfBirth')} />
-      </div>
-    </>
   );
 }

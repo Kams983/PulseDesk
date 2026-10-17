@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarX2, RefreshCw, Stethoscope } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -23,7 +23,7 @@ import { formatDateLong, pluralize } from '@/utils/formatters';
 
 const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointment:cancelled'];
 
-// One doctor, one day, slot by slot: the board a receptionist books from and a doctor reads.
+// One doctor, one day, slot by slot: the board the desk books from and a doctor reads.
 export default function SchedulerPage() {
   useDocumentTitle('Scheduler');
 
@@ -37,13 +37,12 @@ export default function SchedulerPage() {
   const [pickedDate, setPickedDate] = useState(null);
   const [selectedStart, setSelectedStart] = useState(null);
 
-  // The clinic's date, never the browser's: a page opened before midnight in another timezone would
-  // otherwise default to a day the server still considers tomorrow.
+  // the date comes from the clinic, not from the browser
   const board = useQuery({ queryKey: ['dashboard'], queryFn: getDashboard });
   const today = board.data?.today;
   const date = pickedDate || today;
 
-  // departments change about once a year, so they are cached for the whole session
+  // departments hardly ever change, so they are cached for a while
   const departments = useQuery({ queryKey: ['departments'], queryFn: listDepartments, staleTime: 30 * 60_000 });
   const doctors = useQuery({
     queryKey: ['doctors', departmentId],
@@ -53,8 +52,8 @@ export default function SchedulerPage() {
 
   const doctor = (doctors.data || []).find((item) => item.id === doctorId) || null;
 
-  // A doctor account only ever gets its own record back, so it is preselected and the board opens on
-  // itself. A doctor the department filter just removed cannot stay selected either.
+  // A doctor account only gets its own record back, so it is picked automatically. If the chosen
+  // doctor is no longer in the list, the choice is cleared.
   useEffect(() => {
     const list = doctors.data || [];
 
@@ -69,13 +68,11 @@ export default function SchedulerPage() {
     queryKey: ['slots', doctorId, date],
     queryFn: () => listSlots(doctorId, date),
     enabled: Boolean(doctorId && date),
-    // the previous day's grid stays on screen while the next one loads, so switching day or doctor
-    // does not blink through an empty board
+    // keep the old grid on screen while the new day loads
     placeholderData: keepPreviousData,
   });
 
-  // The grid knows a slot is taken, only this knows by whom: the appointment carries the patient
-  // snapshot, and a doctor's list is already scoped to their own visits by the server.
+  // the grid knows a slot is taken, this tells us who took it
   const day = useQuery({
     queryKey: ['appointments', 'day', doctorId, date],
     queryFn: () => listAppointments({ doctorId, dateFrom: date, dateTo: date, limit: 50, sortBy: 'startTime' }),
@@ -83,20 +80,11 @@ export default function SchedulerPage() {
     placeholderData: keepPreviousData,
   });
 
-  // Memoised because it is handed to the memoised grid: a new map on every render would redraw every
-  // slot button.
-  const bookedByStart = useMemo(
-    () => new Map((day.data?.appointments || []).map((appointment) => [appointment.startTime, appointment])),
-    [day.data]
+  const bookedByStart = new Map(
+    (day.data?.appointments || []).map((appointment) => [appointment.startTime, appointment])
   );
 
-  // Stable for the same reason: SlotButton only skips a redraw if this function never changes.
-  const handleSelectSlot = useCallback((startTime) => setSelectedStart(startTime), []);
-
-  // Watching one doctor on one day is what the room is; leaving the previous one is what keeps a lap
-  // around the clinic from subscribing this socket to every board it ever showed. A reconnect arrives
-  // as a new socket in no room at all, so joining on connect as well is what keeps a board that
-  // survived a dropped connection live afterwards.
+  // Watch this doctor on this day, and leave the room when either changes.
   useEffect(() => {
     if (!socket || !doctorId || !date) {
       return undefined;
@@ -115,13 +103,12 @@ export default function SchedulerPage() {
     };
   }, [socket, doctorId, date]);
 
+  // a change only refreshes the boards that show this doctor and this day
   useEffect(() => {
     if (!socket) {
       return undefined;
     }
 
-    // The server broadcasts to every staff socket and to the doctor's own room, so one booking wakes
-    // every board in the clinic. Only the boards showing this doctor and this date refetch.
     function onAppointmentEvent(payload) {
       if (payload.doctorId !== doctorId || payload.date !== date) {
         return;
@@ -153,10 +140,14 @@ export default function SchedulerPage() {
     return <ErrorMessage message={board.error.message} onRetry={board.refetch} />;
   }
 
-  const workingDay = doctor && date ? doctor.schedule.some((daySchedule) => daySchedule.dayOfWeek === weekdayIndex(date)) : true;
+  let worksToday = true;
+
+  if (doctor && date) {
+    worksToday = doctor.schedule.some((daySchedule) => daySchedule.dayOfWeek === weekdayIndex(date));
+  }
+
   const gridSlots = slots.data?.slots || [];
   const selectedSlot = selectedStart ? gridSlots.find((slot) => slot.startTime === selectedStart) : null;
-  // a fetch in flight over data already on screen: the grid stays, with a quiet line above it
   const isRefreshing = slots.isFetching && !slots.isPending;
 
   return (
@@ -181,7 +172,7 @@ export default function SchedulerPage() {
 
       <Card
         title={doctor ? doctor.name : 'The day board'}
-        subtitle={boardSubtitle({ doctor, date })}
+        subtitle={getBoardSubtitle(doctor, date)}
         action={
           <div className="flex items-center gap-2">
             {isRefreshing ? <span className="text-xs text-ink-muted">Updating…</span> : null}
@@ -200,9 +191,9 @@ export default function SchedulerPage() {
           gridSlots={gridSlots}
           bookedByStart={bookedByStart}
           canBook={canBook}
-          workingDay={workingDay}
+          worksToday={worksToday}
           selectedStart={selectedStart}
-          onSelect={handleSelectSlot}
+          onSelect={setSelectedStart}
         />
       </Card>
 
@@ -219,7 +210,7 @@ export default function SchedulerPage() {
   );
 }
 
-function boardSubtitle({ doctor, date }) {
+function getBoardSubtitle(doctor, date) {
   if (!doctor) {
     return 'Pick a doctor to see their slots';
   }
@@ -233,9 +224,8 @@ function boardSubtitle({ doctor, date }) {
   return parts.join(' · ');
 }
 
-// The grid is one of six things the board can be showing, which reads better as small returns than as
-// one chain of ternaries.
-function BoardBody({ doctor, doctorId, date, slots, gridSlots, bookedByStart, canBook, workingDay, selectedStart, onSelect }) {
+// The board can show a few different things, so each case returns its own piece of screen.
+function BoardBody({ doctor, doctorId, date, slots, gridSlots, bookedByStart, canBook, worksToday, selectedStart, onSelect }) {
   if (!doctorId) {
     return (
       <EmptyState
@@ -254,7 +244,7 @@ function BoardBody({ doctor, doctorId, date, slots, gridSlots, bookedByStart, ca
     return <BoardSkeleton />;
   }
 
-  if (!workingDay) {
+  if (!worksToday) {
     return (
       <EmptyState
         icon={CalendarX2}
@@ -265,8 +255,7 @@ function BoardBody({ doctor, doctorId, date, slots, gridSlots, bookedByStart, ca
   }
 
   if (gridSlots.length === 0) {
-    // a working day always generates a grid, so this is the honest answer for the odd schedule that
-    // produces no whole slot rather than a claim about the doctor's week
+    // the doctor works today, but their hours are too short for one whole slot
     return (
       <EmptyState
         icon={CalendarX2}

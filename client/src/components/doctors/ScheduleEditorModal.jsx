@@ -10,9 +10,8 @@ import { WEEKDAYS, countSlots, hasErrors, scheduleFromDoctor, schedulePayload, t
 
 const SLOT_DURATIONS = [10, 15, 20, 30, 45, 60];
 
-// One editor for the whole week. The state is a local copy of the doctor's schedule rather than a form
-// library's, because the shape is days holding arrays of windows: adding and removing windows is what
-// this screen does, and field arrays would only add a layer between the click and the list.
+// The whole week in one editor. The schedule is kept in local state because this screen adds and removes
+// windows all the time, which a form library would only make longer.
 export default function ScheduleEditorModal({ doctor, onClose, onSaved }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -21,11 +20,25 @@ export default function ScheduleEditorModal({ doctor, onClose, onSaved }) {
   const [serverErrors, setServerErrors] = useState({});
   const [showValidation, setShowValidation] = useState(false);
 
-  // client side copies of the server rules, so a bad window is explained while it is being typed
-  const clientErrors = validationErrors(schedule);
+  // the same rules the server checks, so a bad window is explained while it is typed
+  const clientErrors = {};
+
+  for (const day of schedule) {
+    const problems = validateDay(day);
+
+    for (const key of Object.keys(problems)) {
+      clientErrors[`${day.dayOfWeek}.${key}`] = problems[key];
+    }
+  }
+
   const errors = { ...clientErrors, ...serverErrors };
   const workedDays = schedule.filter((day) => day.sessions.length > 0);
-  const weeklySlots = workedDays.reduce((total, day) => total + countSlots(day, Number(slotDurationMinutes)), 0);
+
+  let weeklySlots = 0;
+
+  for (const day of workedDays) {
+    weeklySlots += countSlots(day, Number(slotDurationMinutes));
+  }
 
   const save = useMutation({
     mutationFn: () =>
@@ -40,28 +53,44 @@ export default function ScheduleEditorModal({ doctor, onClose, onSaved }) {
   }
 
   function addWindow(dayOfWeek, kind) {
-    updateDay(dayOfWeek, (day) => ({
-      ...day,
-      [kind]: [
-        ...day[kind],
-        kind === 'sessions' ? { name: 'Session', start: '09:00', end: '12:00' } : { name: 'Break', start: '12:00', end: '13:00' },
-      ],
-    }));
+    updateDay(dayOfWeek, (day) => {
+      const next = { ...day };
+      const window = kind === 'sessions' ? { name: 'Session', start: '09:00', end: '12:00' } : { name: 'Break', start: '12:00', end: '13:00' };
+
+      next[kind] = [...day[kind], window];
+
+      return next;
+    });
   }
 
   function removeWindow(dayOfWeek, kind, index) {
-    updateDay(dayOfWeek, (day) => ({ ...day, [kind]: day[kind].filter((_, position) => position !== index) }));
+    updateDay(dayOfWeek, (day) => {
+      const next = { ...day };
+
+      next[kind] = day[kind].filter((_, position) => position !== index);
+
+      return next;
+    });
   }
 
   function changeWindow(dayOfWeek, kind, index, field, value) {
-    updateDay(dayOfWeek, (day) => ({
-      ...day,
-      [kind]: day[kind].map((window, position) => (position === index ? { ...window, [field]: value } : window)),
-    }));
+    updateDay(dayOfWeek, (day) => {
+      const next = { ...day };
+
+      next[kind] = day[kind].map((window, position) => {
+        if (position !== index) {
+          return window;
+        }
+
+        return { ...window, [field]: value };
+      });
+
+      return next;
+    });
   }
 
-  // The api answers a bad schedule with the path of the exact window ('schedule.0.sessions.1.start'), and
-  // the day it names is the nth worked day of the payload, which is not the same as a weekday number.
+  // The api names the exact window, for example 'schedule.0.sessions.1.start'. The first number is the
+  // nth working day of the payload, which is not the same as a weekday number.
   function mapServerError(field) {
     const match = /^schedule\.(\d+)\.(.+)$/.exec(field);
 
@@ -144,19 +173,38 @@ export default function ScheduleEditorModal({ doctor, onClose, onSaved }) {
         </div>
 
         <div className="mt-4 space-y-3">
-          {WEEKDAYS.map((weekday) => (
-            <DaySection
-              key={weekday.value}
-              weekday={weekday}
-              day={schedule.find((entry) => entry.dayOfWeek === weekday.value)}
-              slotDurationMinutes={slotDurationMinutes}
-              errors={visibleErrors({ errors, serverErrors, dayOfWeek: weekday.value, showValidation })}
-              onToggle={(isOn) => setSchedule((current) => toggleDay(current, weekday.value, isOn))}
-              onAddWindow={(kind) => addWindow(weekday.value, kind)}
-              onRemoveWindow={(kind, index) => removeWindow(weekday.value, kind, index)}
-              onWindowChange={(kind, index, field, value) => changeWindow(weekday.value, kind, index, field, value)}
-            />
-          ))}
+          {WEEKDAYS.map((weekday) => {
+            const day = schedule.find((entry) => entry.dayOfWeek === weekday.value);
+            const dayErrors = {};
+            const prefix = `${weekday.value}.`;
+
+            for (const key of Object.keys(errors)) {
+              if (!key.startsWith(prefix)) {
+                continue;
+              }
+
+              const path = key.slice(prefix.length);
+
+              // nothing is shown until the form is submitted, unless the server complained about it
+              if (showValidation || serverErrors[key]) {
+                dayErrors[path] = errors[key];
+              }
+            }
+
+            return (
+              <DaySection
+                key={weekday.value}
+                weekday={weekday}
+                day={day}
+                slotDurationMinutes={slotDurationMinutes}
+                errors={dayErrors}
+                onToggle={(isOn) => setSchedule((current) => toggleDay(current, weekday.value, isOn))}
+                onAddWindow={(kind) => addWindow(weekday.value, kind)}
+                onRemoveWindow={(kind, index) => removeWindow(weekday.value, kind, index)}
+                onWindowChange={(kind, index, field, value) => changeWindow(weekday.value, kind, index, field, value)}
+              />
+            );
+          })}
         </div>
 
         {hasErrors(clientErrors) && showValidation ? (
@@ -171,39 +219,6 @@ export default function ScheduleEditorModal({ doctor, onClose, onSaved }) {
   );
 }
 
-// every rule the server enforces, restated as messages a form can show beside a field
-function validationErrors(schedule) {
-  const all = {};
-
-  for (const day of schedule) {
-    for (const [path, message] of Object.entries(validateDay(day))) {
-      all[`${day.dayOfWeek}.${path}`] = message;
-    }
-  }
-
-  return all;
-}
-
-// what a day should actually show: nothing until the form has been submitted, unless the server refused it
-function visibleErrors({ errors, serverErrors, dayOfWeek, showValidation }) {
-  const prefix = `${dayOfWeek}.`;
-  const dayErrors = {};
-
-  for (const [key, message] of Object.entries(errors)) {
-    if (!key.startsWith(prefix)) {
-      continue;
-    }
-
-    const path = key.slice(prefix.length);
-
-    if (showValidation || serverErrors[key]) {
-      dayErrors[path] = message;
-    }
-  }
-
-  return dayErrors;
-}
-
 function DaySection({ weekday, day, slotDurationMinutes, errors, onToggle, onAddWindow, onRemoveWindow, onWindowChange }) {
   const isOn = day.sessions.length > 0;
 
@@ -211,7 +226,7 @@ function DaySection({ weekday, day, slotDurationMinutes, errors, onToggle, onAdd
     <section className={`rounded-card border p-3 ${isOn ? 'border-line' : 'border-dashed border-line/70 bg-page/40'}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          {/* a switch, not a checkbox: the day is on or off, and the sessions below follow it */}
+          {/* a switch, not a checkbox: the day is on or off and the windows below follow it */}
           <button
             type="button"
             role="switch"
@@ -268,13 +283,9 @@ function DaySection({ weekday, day, slotDurationMinutes, errors, onToggle, onAdd
   );
 }
 
-// one list of windows: sessions are required once a day is on, breaks are not, which is the only
-// difference between the two lists
+// One list of windows. Sessions are required once a day is on and breaks are not, which is the only
+// difference between the two lists.
 function WindowList({ kind, label, windows, errors, onChange, onRemove, onAdd, canRemove = true, emptyText }) {
-  function errorFor(index, field) {
-    return errors[`${kind}.${index}.${field}`];
-  }
-
   return (
     <div>
       <div className="flex items-center justify-between">
@@ -293,65 +304,54 @@ function WindowList({ kind, label, windows, errors, onChange, onRemove, onAdd, c
         <p className="mt-1.5 text-xs text-ink-muted">{emptyText}</p>
       ) : (
         <ul className="mt-1.5 space-y-2">
-          {windows.map((window, index) => (
-            <WindowRow
-              key={index}
-              label={label}
-              index={index}
-              window={window}
-              errorFor={(field) => errorFor(index, field)}
-              onChange={(field, value) => onChange(index, field, value)}
-              onRemove={() => onRemove(index)}
-              canRemove={canRemove}
-            />
-          ))}
+          {windows.map((window, index) => {
+            const startError = errors[`${kind}.${index}.start`];
+            const endError = errors[`${kind}.${index}.end`];
+            const message = endError || startError;
+
+            return (
+              <li key={index} className="grid grid-cols-2 items-start gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
+                <input
+                  aria-label={`${label} ${index + 1} name`}
+                  value={window.name || ''}
+                  onChange={(event) => onChange(index, 'name', event.target.value)}
+                  placeholder="Name"
+                  className="col-span-2 min-w-0 rounded-control border border-line bg-card px-3 py-2 text-sm text-ink focus:border-primary sm:col-span-1"
+                />
+                <input
+                  type="time"
+                  aria-label={`${label} ${index + 1} start`}
+                  value={window.start}
+                  onChange={(event) => onChange(index, 'start', event.target.value)}
+                  className={`rounded-control border bg-card px-2 py-2 text-sm text-ink focus:border-primary ${
+                    startError ? 'border-danger' : 'border-line'
+                  }`}
+                />
+                <input
+                  type="time"
+                  aria-label={`${label} ${index + 1} end`}
+                  value={window.end}
+                  onChange={(event) => onChange(index, 'end', event.target.value)}
+                  className={`rounded-control border bg-card px-2 py-2 text-sm text-ink focus:border-primary ${
+                    endError ? 'border-danger' : 'border-line'
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={() => onRemove(index)}
+                  disabled={!canRemove}
+                  aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}
+                  className="justify-self-end rounded-pill p-2 text-ink-muted transition hover:bg-danger-tint hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Trash2 size={15} aria-hidden="true" />
+                </button>
+
+                {message ? <p className="col-span-2 text-xs text-danger sm:col-span-4">{message}</p> : null}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
-  );
-}
-
-function WindowRow({ label, index, window, errorFor, onChange, onRemove, canRemove }) {
-  const message = errorFor('end') || errorFor('start');
-
-  return (
-    <li className="grid grid-cols-2 items-start gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
-      <input
-        aria-label={`${label} ${index + 1} name`}
-        value={window.name || ''}
-        onChange={(event) => onChange('name', event.target.value)}
-        placeholder="Name"
-        className="col-span-2 min-w-0 rounded-control border border-line bg-card px-3 py-2 text-sm text-ink focus:border-primary sm:col-span-1"
-      />
-      <input
-        type="time"
-        aria-label={`${label} ${index + 1} start`}
-        value={window.start}
-        onChange={(event) => onChange('start', event.target.value)}
-        className={`rounded-control border bg-card px-2 py-2 text-sm text-ink focus:border-primary ${
-          errorFor('start') ? 'border-danger' : 'border-line'
-        }`}
-      />
-      <input
-        type="time"
-        aria-label={`${label} ${index + 1} end`}
-        value={window.end}
-        onChange={(event) => onChange('end', event.target.value)}
-        className={`rounded-control border bg-card px-2 py-2 text-sm text-ink focus:border-primary ${
-          errorFor('end') ? 'border-danger' : 'border-line'
-        }`}
-      />
-      <button
-        type="button"
-        onClick={onRemove}
-        disabled={!canRemove}
-        aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}
-        className="justify-self-end rounded-pill p-2 text-ink-muted transition hover:bg-danger-tint hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        <Trash2 size={15} aria-hidden="true" />
-      </button>
-
-      {message ? <p className="col-span-2 text-xs text-danger sm:col-span-4">{message}</p> : null}
-    </li>
   );
 }

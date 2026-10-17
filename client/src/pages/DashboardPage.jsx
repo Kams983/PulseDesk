@@ -31,28 +31,25 @@ const TREND_RANGES = [
   { value: 30, label: '30 days' },
 ];
 
-// the same three broadcasts the appointments page listens to, so the board is as live as the lists
+// the same events the appointments page listens to
 const REALTIME_EVENTS = ['appointment:created', 'appointment:updated', 'appointment:cancelled'];
-// how many of the selected day's visits the card lists before sending the reader to the full list
+// how many visits of the selected day the card lists
 const DAY_ROWS = 10;
 
-// The board is read only: the counts, the trend, the calendar month, the day under the calendar and the
-// waiting room all come from the api. What it contains follows the role. A doctor gets their own next
-// patient first and then their own queue, the desk gets the waiting room, and a super admin also gets
-// today broken down per doctor.
+// The dashboard only reads data. What it shows depends on the role: a doctor gets their next patient and
+// their own queue, the desk gets the waiting room, and a super admin also gets a row per doctor.
 export default function DashboardPage() {
   useDocumentTitle('Dashboard');
 
   const { user } = useAuth();
   const { socket } = useRealtime();
   const queryClient = useQueryClient();
-  const now = useMinuteTick();
+  const currentTime = useMinuteTick();
   const [trendDays, setTrendDays] = useState(7);
-  // null rather than a date until the server reports today: the browser clock is never the reference
+  // we wait for the server to tell us today, because the browser clock is not the reference
   const [selectedDate, setSelectedDate] = useState(null);
 
   const isDoctor = user.role === ROLES.DOCTOR;
-  // both desk roles work the same waiting room, and a doctor is the only one who does not get it
   const isDesk = !isDoctor;
 
   const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: getDashboard });
@@ -66,7 +63,6 @@ export default function DashboardPage() {
     enabled: Boolean(today),
   });
 
-  // the dots under the calendar come from one grouped query for the whole month, never one per cell
   const calendar = useQuery({
     queryKey: ['dashboard', 'calendar', month],
     queryFn: () => getCalendar(month),
@@ -79,7 +75,7 @@ export default function DashboardPage() {
     enabled: Boolean(selectedDay),
   });
 
-  // the desk's live list: everyone marked arrived today who has not been completed
+  // the desk's list of arrived patients
   const waiting = useQuery({
     queryKey: ['dashboard', 'waiting', today],
     queryFn: () =>
@@ -87,11 +83,10 @@ export default function DashboardPage() {
     enabled: Boolean(today) && isDesk,
   });
 
-  // a doctor already gets their own counts from the dashboard, so only the desk fetches the register
+  // a doctor already has their counts, so only the desk needs the list of doctors
   const doctors = useQuery({ queryKey: ['doctors'], queryFn: () => listDoctors(), enabled: isDesk });
 
-  // Live: any appointment this caller is allowed to see wakes the board, so an arrival shows up in the
-  // waiting room without anyone reloading the page.
+  // any new appointment refreshes the board, so an arrival shows up without a reload
   useEffect(() => {
     if (!socket) {
       return undefined;
@@ -112,13 +107,33 @@ export default function DashboardPage() {
   }
 
   const counts = dashboard.data?.counts;
-  // the day query is disabled until the board reports the clinic date, and a disabled query is not
-  // loading, so the first paint is still a skeleton rather than an empty day
+  // the day query waits for the clinic date, so the first paint shows a skeleton
   const isDayLoading = dashboard.isLoading || day.isLoading;
   const appointments = day.data?.appointments || [];
-  // a busy day holds more than one page, so the card counts the day rather than the rows it loaded
   const dayTotal = day.data?.meta?.total ?? appointments.length;
-  const dayCounts = calendar.data?.days.reduce((all, entry) => ({ ...all, [entry.date]: entry.total }), {}) || {};
+
+  const dayCounts = {};
+
+  for (const entry of calendar.data?.days || []) {
+    dayCounts[entry.date] = entry.total;
+  }
+
+  let dayTitle = 'Your patients today';
+
+  if (isDoctor) {
+    dayTitle = 'My queue';
+  } else if (selectedDay !== today) {
+    dayTitle = `Appointments on ${formatDate(selectedDay)}`;
+  }
+
+  let daySubtitle = 'Reading the day';
+
+  if (!isDayLoading) {
+    const when = selectedDay === today ? ' for today' : ` on ${formatDate(selectedDay)}`;
+    const shown = appointments.length < dayTotal ? ` · showing the first ${appointments.length}` : '';
+
+    daySubtitle = `${pluralize(dayTotal, 'visit')} booked${when}${shown}`;
+  }
 
   return (
     <div className="space-y-5">
@@ -131,8 +146,10 @@ export default function DashboardPage() {
         </p>
       </header>
 
-      {/* the one card that comes before the numbers, because it is the thing to act on right now */}
-      {isDoctor ? <NextPatientCard next={dashboard.data?.next} today={today} isLoading={dashboard.isLoading} now={now} /> : null}
+      {/* the next patient comes first because it is the thing to act on now */}
+      {isDoctor ? (
+        <NextPatientCard next={dashboard.data?.next} today={today} isLoading={dashboard.isLoading} now={currentTime} />
+      ) : null}
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
         {STAT_CARDS.map(({ key, label, icon, tone }) => (
@@ -153,7 +170,7 @@ export default function DashboardPage() {
           isLoading={waiting.isLoading}
           error={waiting.isError ? waiting.error : null}
           onRetry={waiting.refetch}
-          now={now}
+          now={currentTime}
         />
       ) : null}
 
@@ -172,8 +189,6 @@ export default function DashboardPage() {
               />
             }
           >
-            {/* the query stays disabled until the server reports today, and a disabled query is not
-                loading: the chart therefore keys off its own data, not off a loading flag */}
             {trend.isError ? (
               <ErrorMessage message={trend.error.message} onRetry={trend.refetch} />
             ) : !trend.data ? (
@@ -186,8 +201,8 @@ export default function DashboardPage() {
           </Card>
 
           <Card
-            title={dayCardTitle({ isDoctor, selectedDay, today })}
-            subtitle={dayCardSubtitle({ isDayLoading, dayTotal, selectedDay, today, shown: appointments.length })}
+            title={dayTitle}
+            subtitle={daySubtitle}
             action={
               <div className="flex items-center gap-2">
                 {today && selectedDay !== today ? (
@@ -195,7 +210,14 @@ export default function DashboardPage() {
                     Back to today
                   </Button>
                 ) : null}
-                {selectedDay ? <ViewAllLink date={selectedDay} /> : null}
+                {selectedDay ? (
+                  <Link
+                    to={`/appointments?dateFrom=${selectedDay}&dateTo=${selectedDay}`}
+                    className="inline-flex items-center rounded-pill bg-primary-tint px-4 py-2 text-xs font-semibold text-primary transition hover:bg-primary-tint/70"
+                  >
+                    View all
+                  </Link>
+                ) : null}
               </div>
             }
           >
@@ -222,7 +244,12 @@ export default function DashboardPage() {
                 <Skeleton className="h-32 w-full" />
               </div>
             ) : (
-              <MiniCalendar selectedDate={selectedDay} today={today} counts={dayCounts} onSelect={setSelectedDate} />
+              <MiniCalendar
+                selectedDate={selectedDay}
+                today={today}
+                counts={dayCounts}
+                onSelect={setSelectedDate}
+              />
             )}
           </Card>
 
@@ -240,40 +267,5 @@ export default function DashboardPage() {
         </div>
       </div>
     </div>
-  );
-}
-
-function dayCardTitle({ isDoctor, selectedDay, today }) {
-  if (isDoctor) {
-    return 'My queue';
-  }
-
-  if (selectedDay === today) {
-    return 'Your patients today';
-  }
-
-  return `Appointments on ${formatDate(selectedDay)}`;
-}
-
-function dayCardSubtitle({ isDayLoading, dayTotal, selectedDay, today, shown }) {
-  if (isDayLoading) {
-    return 'Reading the day';
-  }
-
-  const when = selectedDay === today ? ' for today' : ` on ${formatDate(selectedDay)}`;
-  const truncated = shown < dayTotal ? ` · showing the first ${shown}` : '';
-
-  return `${pluralize(dayTotal, 'visit')} booked${when}${truncated}`;
-}
-
-// the day card lists the first page of a busy day, so the rest is one click away in the full list
-function ViewAllLink({ date }) {
-  return (
-    <Link
-      to={`/appointments?dateFrom=${date}&dateTo=${date}`}
-      className="inline-flex items-center rounded-pill bg-primary-tint px-4 py-2 text-xs font-semibold text-primary transition hover:bg-primary-tint/70"
-    >
-      View all
-    </Link>
   );
 }

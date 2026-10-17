@@ -11,31 +11,106 @@ const doctorService = require('./doctorService');
 const patientService = require('./patientService');
 const { getSlotsForDoctorDate } = require('./slotService');
 
-// only the fields a list page renders, so a query never drags whole documents around
+// the only fields the list page needs
 const APPOINTMENT_FIELDS =
   'patientId doctorId departmentId date startTime endTime status purpose notes patientSnapshot doctorSnapshot createdBy arrivedAt completedAt cancelledAt cancelReason createdAt';
 
 const DEFAULT_LIMIT = 10;
 
+// Book a visit. The patient is either picked from the list or created here.
 async function createAppointment(payload, user, ip) {
-  const doctor = await findDoctorOrFail(payload.doctorId);
+  const doctor = await Doctor.findById(payload.doctorId).lean();
 
-  assertSlotIsInTheFuture(payload.date, payload.startTime);
+  if (!doctor) {
+    throw AppError.notFound('Doctor not found');
+  }
 
-  const slot = await findBookableSlot(doctor, payload);
-  const { patient, createdNewPatient } = await resolvePatient(payload, user);
+  if (isPastDate(payload.date)) {
+    throw AppError.badRequest('That date is in the past', [
+      { field: 'date', message: 'Appointments cannot be booked for a date that has passed' },
+    ]);
+  }
+
+  if (isPastSlot(payload.date, payload.startTime)) {
+    throw AppError.badRequest('That time has already passed', [
+      { field: 'startTime', message: 'Choose a later time today' },
+    ]);
+  }
+
+  // the booking screen only shows the doctor's slots, so we check against those
+  const { slots } = await getSlotsForDoctorDate(doctor._id.toString(), payload.date);
+  const slot = slots.find((item) => item.startTime === payload.startTime);
+
+  if (!slot) {
+    throw AppError.badRequest("That time is not one of the doctor's slots on that date", [
+      { field: 'startTime', message: 'Choose one of the times the doctor works on that date' },
+    ]);
+  }
+
+  if (slot.status === 'booked') {
+    throw AppError.conflict('That slot is already booked');
+  }
+
+  let patient;
+  let createdNewPatient = false;
+
+  if (payload.patientId) {
+    patient = await Patient.findById(payload.patientId).select('patientCode name mobile').lean();
+
+    if (!patient) {
+      throw AppError.badRequest('Patient not found', [{ field: 'patientId', message: 'No such patient' }]);
+    }
+  } else {
+    patient = await patientService.createPatientFromInput(payload.newPatient, user.id);
+    createdNewPatient = true;
+  }
 
   try {
-    return await saveBooking({ doctor, slot, patient, payload, user, ip });
+    const appointment = await Appointment.create({
+      patientId: patient._id,
+      doctorId: doctor._id,
+      departmentId: doctor.departmentId,
+      date: payload.date,
+      startTime: slot.startTime,
+      // the end time comes from the slot, not from the client
+      endTime: slot.endTime,
+      status: APPOINTMENT_STATUS.SCHEDULED,
+      purpose: payload.purpose,
+      notes: payload.notes,
+      // snapshots keep the list page from having to look up the patient and doctor again
+      patientSnapshot: {
+        name: patient.name,
+        nameLower: patient.name.toLowerCase(),
+        mobile: patient.mobile,
+        patientCode: patient.patientCode,
+      },
+      doctorSnapshot: { name: doctor.name, nameLower: doctor.nameLower },
+      createdBy: user.id,
+    });
+
+    await logAction({
+      user,
+      action: 'APPOINTMENT_CREATED',
+      entity: 'Appointment',
+      entityId: appointment._id,
+      metadata: { date: appointment.date, startTime: appointment.startTime, doctorId: String(doctor._id) },
+      ip,
+    });
+
+    emitAppointmentEvent('created', appointment);
+
+    return appointment;
   } catch (error) {
-    // a visit that was never booked must not leave a freshly registered patient behind
+    // if the booking failed, do not leave a brand new patient behind
     if (createdNewPatient) {
-      await Patient.deleteOne({ _id: patient._id }).catch((cleanupError) =>
-        console.error('patient rollback failed:', cleanupError.message)
-      );
+      try {
+        await Patient.deleteOne({ _id: patient._id });
+      } catch (cleanupError) {
+        console.error('patient rollback failed:', cleanupError.message);
+      }
     }
 
-    // 11000 comes from the partial unique index that guards the slot, see the model
+    // 11000 is the duplicate key error from the index that protects a slot
     if (error.code === 11000) {
       throw AppError.conflict('This slot has just been booked by someone else');
     }
@@ -44,79 +119,8 @@ async function createAppointment(payload, user, ip) {
   }
 }
 
-async function findDoctorOrFail(doctorId) {
-  const doctor = await Doctor.findById(doctorId).lean();
-
-  if (!doctor) {
-    throw AppError.notFound('Doctor not found');
-  }
-
-  return doctor;
-}
-
-// The grid the booking screen showed is the only source of bookable times, so this one check rejects a
-// Sunday, an off grid time such as 09:07 and any time outside the doctor's hours.
-async function findBookableSlot(doctor, payload) {
-  const { slots } = await getSlotsForDoctorDate(doctor._id.toString(), payload.date);
-  const slot = slots.find((candidate) => candidate.startTime === payload.startTime);
-
-  if (!slot) {
-    throw AppError.badRequest("That time is not one of the doctor's slots on that date", [
-      { field: 'startTime', message: 'Choose one of the times the doctor works on that date' },
-    ]);
-  }
-
-  // the friendly message only: two requests can both get this far, which is what the index is for
-  if (slot.status === 'booked') {
-    throw AppError.conflict('That slot is already booked');
-  }
-
-  return slot;
-}
-
-async function saveBooking({ doctor, slot, patient, payload, user, ip }) {
-  const appointment = await Appointment.create(bookingFields({ doctor, slot, patient, payload, user }));
-
-  await logAction({
-    user,
-    action: 'APPOINTMENT_CREATED',
-    entity: 'Appointment',
-    entityId: appointment._id,
-    metadata: { date: appointment.date, startTime: appointment.startTime, doctorId: String(doctor._id) },
-    ip,
-  });
-
-  emitAppointmentEvent('created', appointment);
-
-  return appointment;
-}
-
-function bookingFields({ doctor, slot, patient, payload, user }) {
-  return {
-    patientId: patient._id,
-    doctorId: doctor._id,
-    departmentId: doctor.departmentId,
-    date: payload.date,
-    startTime: slot.startTime,
-    // the end time comes from the generated slot, never from the client
-    endTime: slot.endTime,
-    status: APPOINTMENT_STATUS.SCHEDULED,
-    purpose: payload.purpose,
-    notes: payload.notes,
-    // snapshots are what the list page searches and shows, so it never joins to display a row
-    patientSnapshot: {
-      name: patient.name,
-      nameLower: patient.name.toLowerCase(),
-      mobile: patient.mobile,
-      patientCode: patient.patientCode,
-    },
-    doctorSnapshot: { name: doctor.name, nameLower: doctor.nameLower },
-    createdBy: user.id,
-  };
-}
-
 async function listAppointments(query, user) {
-  const filter = await buildListFilter(query, user);
+  const filter = await buildFilter(query, user);
   const sort = buildSort(query.sortBy, query.sortOrder);
   const page = query.page || 1;
   const limit = query.limit || DEFAULT_LIMIT;
@@ -131,7 +135,10 @@ async function listAppointments(query, user) {
     Appointment.countDocuments(filter),
   ]);
 
-  return { appointments, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  return {
+    appointments,
+    meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  };
 }
 
 async function getAppointmentById(appointmentId, user) {
@@ -141,29 +148,32 @@ async function getAppointmentById(appointmentId, user) {
     throw AppError.notFound('Appointment not found');
   }
 
-  await assertOwnsAppointment(appointment, user, 'view');
+  await checkOwnership(appointment, user, 'view');
 
   return appointment;
 }
 
-// only the desk may rewrite the purpose and the notes of a visit that has not finished
+// Only the desk may change the purpose and the notes of a visit that is still open.
 async function updateAppointment(appointmentId, payload, user, ip) {
-  const appointment = await findForChange(appointmentId);
+  const appointment = await getAppointmentDocument(appointmentId);
 
-  if ([APPOINTMENT_STATUS.COMPLETED, APPOINTMENT_STATUS.CANCELLED].includes(appointment.status)) {
+  if (appointment.status === APPOINTMENT_STATUS.COMPLETED || appointment.status === APPOINTMENT_STATUS.CANCELLED) {
     throw AppError.conflict(`A ${appointment.status} appointment cannot be edited`);
   }
 
   const changed = {};
 
-  for (const field of ['purpose', 'notes']) {
-    if (payload[field] !== undefined && payload[field] !== appointment[field]) {
-      appointment[field] = payload[field];
-      changed[field] = payload[field];
-    }
+  if (payload.purpose !== undefined && payload.purpose !== appointment.purpose) {
+    appointment.purpose = payload.purpose;
+    changed.purpose = payload.purpose;
   }
 
-  // sending the same values back changes nothing, and an empty audit row would only be noise
+  if (payload.notes !== undefined && payload.notes !== appointment.notes) {
+    appointment.notes = payload.notes;
+    changed.notes = payload.notes;
+  }
+
+  // nothing changed, so there is nothing to save or log
   if (Object.keys(changed).length === 0) {
     return appointment;
   }
@@ -184,14 +194,13 @@ async function updateAppointment(appointmentId, payload, user, ip) {
   return appointment;
 }
 
-// a cancel keeps the row as a record and only takes it out of the active statuses, which is what frees
-// the slot inside the partial unique index
+// Cancelling keeps the row and only changes its status, which frees the slot.
 async function cancelAppointment(appointmentId, reason, user, ip) {
-  const appointment = await findForChange(appointmentId);
+  const appointment = await getAppointmentDocument(appointmentId);
 
   assertTransition(appointment.status, APPOINTMENT_STATUS.CANCELLED);
 
-  // read before the change, because the audit row says what the visit actually was
+  // read the old status before we change it, because the audit row needs it
   const previousStatus = appointment.status;
 
   appointment.status = APPOINTMENT_STATUS.CANCELLED;
@@ -218,11 +227,11 @@ async function cancelAppointment(appointmentId, reason, user, ip) {
 }
 
 async function markArrived(appointmentId, user, ip) {
-  const appointment = await findForChange(appointmentId);
+  const appointment = await getAppointmentDocument(appointmentId);
 
   assertTransition(appointment.status, APPOINTMENT_STATUS.ARRIVED);
 
-  // nobody can arrive for tomorrow, so the status and the date would contradict each other
+  // nobody can arrive for tomorrow
   if (appointment.date > nowInClinicTz().toISODate()) {
     throw AppError.conflict('This appointment is not due yet');
   }
@@ -240,16 +249,16 @@ async function markArrived(appointmentId, user, ip) {
     ip,
   });
 
-  // an arrival moves the same row on, so the board refetches instead of learning a new event
+  // the row moved on, so the board just fetches it again
   emitAppointmentEvent('updated', appointment);
 
   return appointment;
 }
 
 async function completeAppointment(appointmentId, user, ip) {
-  const appointment = await findForChange(appointmentId);
+  const appointment = await getAppointmentDocument(appointmentId);
 
-  await assertOwnsAppointment(appointment, user, 'complete');
+  await checkOwnership(appointment, user, 'complete');
   assertTransition(appointment.status, APPOINTMENT_STATUS.COMPLETED);
 
   appointment.status = APPOINTMENT_STATUS.COMPLETED;
@@ -270,7 +279,7 @@ async function completeAppointment(appointmentId, user, ip) {
   return appointment;
 }
 
-// every status change passes through here, so no route can invent a move the workflow does not allow
+// Every status change goes through here, so no route can make up a move the workflow forbids.
 function assertTransition(from, to) {
   const allowed = ALLOWED_TRANSITIONS[from] || [];
 
@@ -279,17 +288,9 @@ function assertTransition(from, to) {
   }
 }
 
-async function buildListFilter(query, user) {
+async function buildFilter(query, user) {
   const filter = {};
 
-  addExactFilters(filter, query);
-  addTextFilters(filter, query);
-  await addDoctorScope(filter, query, user);
-
-  return filter;
-}
-
-function addExactFilters(filter, query) {
   if (query.status) {
     filter.status = query.status;
   }
@@ -299,7 +300,7 @@ function addExactFilters(filter, query) {
   }
 
   if (query.dateFrom || query.dateTo) {
-    // dates are YYYY-MM-DD strings, so a string range is exactly a date range
+    // dates are YYYY-MM-DD strings, so comparing them as strings works
     filter.date = {};
 
     if (query.dateFrom) {
@@ -310,9 +311,7 @@ function addExactFilters(filter, query) {
       filter.date.$lte = query.dateTo;
     }
   }
-}
 
-function addTextFilters(filter, query) {
   if (query.q) {
     filter['patientSnapshot.nameLower'] = anchoredPrefix(query.q.toLowerCase());
   }
@@ -324,89 +323,55 @@ function addTextFilters(filter, query) {
   if (query.doctor) {
     filter['doctorSnapshot.nameLower'] = anchoredPrefix(query.doctor.toLowerCase());
   }
-}
 
-// a doctor sees their own visits no matter what the query string asked for
-async function addDoctorScope(filter, query, user) {
-  if (user.role !== ROLES.DOCTOR) {
-    if (query.doctorId) {
-      filter.doctorId = query.doctorId;
+  // a doctor always sees their own visits, whatever the query says
+  if (user.role === ROLES.DOCTOR) {
+    const own = await doctorService.findOwnDoctorProfile(user.id);
+
+    if (!own) {
+      throw AppError.forbidden('No doctor profile is linked to this account');
     }
 
-    return;
+    filter.doctorId = own._id;
+  } else if (query.doctorId) {
+    filter.doctorId = query.doctorId;
   }
 
-  const own = await doctorService.findOwnDoctorProfile(user.id);
-
-  if (!own) {
-    throw AppError.forbidden('No doctor profile is linked to this account');
-  }
-
-  filter.doctorId = own._id;
+  return filter;
 }
 
 function buildSort(sortBy = APPOINTMENT_SORT_FIELDS[0], sortOrder = 'asc') {
   const direction = sortOrder === 'desc' ? -1 : 1;
-  const sort = { [sortBy]: direction };
+  const sort = {};
 
-  // a date on its own does not order a busy day, so the start time is always the second key
+  sort[sortBy] = direction;
+
+  // a whole day shares a date, so the start time breaks the tie
   if (sortBy === 'date') {
     sort.startTime = direction;
   }
 
-  // many visits share a date and a start time across doctors, and without a full order skip and limit
-  // can repeat one row on page two and drop another
+  // and the id makes the order complete, so no row shows up twice on two pages
   sort._id = 1;
 
   return sort;
 }
 
-// a doctor may only touch a visit of their own, everyone else is already allowed by the route
-async function assertOwnsAppointment(appointment, user, action) {
+// A doctor may only view or complete their own visits.
+async function checkOwnership(appointment, user, action) {
   if (user.role !== ROLES.DOCTOR) {
     return;
   }
 
   const own = await doctorService.findOwnDoctorProfile(user.id);
+  const isMine = own && own._id.toString() === appointment.doctorId.toString();
 
-  if (!own || own._id.toString() !== appointment.doctorId.toString()) {
+  if (!isMine) {
     throw AppError.forbidden(`You can only ${action} your own appointments`);
   }
 }
 
-function assertSlotIsInTheFuture(date, startTime) {
-  if (isPastDate(date)) {
-    throw AppError.badRequest('That date is in the past', [
-      { field: 'date', message: 'Appointments cannot be booked for a date that has passed' },
-    ]);
-  }
-
-  if (isPastSlot(date, startTime)) {
-    throw AppError.badRequest('That time has already passed', [
-      { field: 'startTime', message: 'Choose a later time today' },
-    ]);
-  }
-}
-
-// an existing patient is looked up, a new one is registered on the spot. A repeat mobile number is a
-// conflict that carries the existing patient, never a silent merge.
-async function resolvePatient(payload, user) {
-  if (!payload.patientId) {
-    const patient = await patientService.createPatientFromInput(payload.newPatient, user.id);
-
-    return { patient, createdNewPatient: true };
-  }
-
-  const patient = await Patient.findById(payload.patientId).select('patientCode name mobile').lean();
-
-  if (!patient) {
-    throw AppError.badRequest('Patient not found', [{ field: 'patientId', message: 'No such patient' }]);
-  }
-
-  return { patient, createdNewPatient: false };
-}
-
-async function findForChange(appointmentId) {
+async function getAppointmentDocument(appointmentId) {
   const appointment = await Appointment.findById(appointmentId);
 
   if (!appointment) {
