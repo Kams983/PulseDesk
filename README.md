@@ -1,104 +1,300 @@
 # PulseDesk
 
-PulseDesk is a small appointment system for a clinic. Staff can book patients in, move a visit along
-from scheduled to arrived to completed, and see the day update live on other screens.
+## Project Overview
 
-The api is Express and MongoDB. The website is Vite and React.
+PulseDesk is an appointment system for a small clinic. It covers a working day from three points of view, and each role sees a different part of it. A super admin adds departments, doctors and receptionists, and decides each doctor's weekly hours. A receptionist books visits, finds patients, and moves a visit from scheduled to arrived. A doctor opens their own board, sees only their own appointments, and completes a visit once the patient has been seen.
 
-## What you can do
+The server is Express and MongoDB. The website is Vite and React, and it talks to the api over http and Socket.IO.
 
-There are three kinds of account.
-
-- **Super admin** adds departments, doctors and receptionists, and edits each doctor's weekly hours.
-- **Receptionist** books a visit for a patient already on the list or for a new one, searches and sorts
-  the list, and marks people as arrived.
-- **Doctor** opens their own board, sees only their own visits, and completes them.
-
-Every role also gets a dashboard with today's numbers, and the pages refresh themselves when someone
-else books, cancels or updates a visit.
-
-## Built with
-
-- **Server:** Node 20, Express 5, MongoDB with Mongoose, zod for input checks, Luxon for the clinic
-  timezone, Socket.IO for live updates, Jest with an in-memory MongoDB for tests.
-- **Client:** Vite, React 19, React Router, TanStack Query, Tailwind CSS, axios, react-hook-form and zod.
-
-## Folder map
+## Folder Structure
 
 ```
 server/
-  scripts/    seed.js builds the demo data, seedData.js holds the made up names and hours
-  src/        config, controllers, middlewares, models, routes, services, sockets, utils, validators
-  tests/      Jest tests, run against a temporary database
+  scripts/        seed.js builds the demo clinic, seedData.js holds the made up records
+  src/config/     env.js reads process.env, db.js connects, constants.js holds roles and statuses
+  src/controllers/  one thin function per route
+  src/middlewares/  authenticate, authorize, validate, rate limiters, errorHandler, notFound
+  src/models/     User, RefreshToken, Department, Doctor, Patient, Appointment, AuditLog
+  src/routes/     index.js plus one file per resource
+  src/services/   every rule lives here
+  src/sockets/    the socket server and the emit helpers
+  src/utils/      AppError, response, asyncHandler, time, regex, sequence
+  src/validators/ zod schemas, one file per resource
+  tests/          jest suites against a temporary database
 client/
-  src/        api, components, context, hooks, pages, routes, utils
+  src/api/        one module per resource, plus the axios client
+  src/components/  ui (buttons, inputs, cards), layout (rail, top bar), dashboard, scheduler,
+                  appointments, doctors
+  src/context/    the session, the socket, the toasts
+  src/hooks/      document title, media query, minute tick, debounce
+  src/pages/      Dashboard, Scheduler, Appointments, Doctors, Login, NotFound
+  src/routes/     the router and the sign in guard
+  src/utils/      constants, dates, formatters, schedule helpers
 ```
 
-Both `src` folders follow one simple idea: the `server/src/services` files hold the rules, and the
-`client/src/api` files are the only ones that talk to the server.
+The rules live in `server/src/services`, and the client only calls the api from `client/src/api`.
 
-## Running it locally
+## Architecture Overview
 
-You need Node 20 or newer and MongoDB (a local `mongod`, an Atlas cluster, or the Docker setup below).
+A request passes through the same five parts. The route states which roles may call it and which schema checks the input. The validator parses the body and the parsed result replaces what the client sent. The controller reads the request and sends the response. The service holds the rules and throws an `AppError` when it refuses. The model owns the data. Errors from any of these land in one middleware, so every failure answers with the same shape.
 
-```bash
-# server
-cd server
-cp .env.example .env        # then put a long random string in JWT_ACCESS_SECRET
-npm install
+Socket.IO runs on the same http server and the same port as the api, and a client connects with the access token it already holds. Services do not touch `res`, so the socket layer, the seed script and the tests all call the same functions the routes call.
 
-# client, in a second terminal
-cd client
-cp .env.example .env        # optional, the defaults work
-npm install
+```mermaid
+flowchart LR
+  A[route] --> B[validator]
+  B --> C[controller]
+  C --> D[service]
+  D --> E[model]
+  D -- error --> F[errorHandler]
 ```
 
-Then, from the project root:
+On the client, the api modules own every http call, the context files hold the session and the socket, and pages put components together. Every filter, sort and page lives in the query string, so a link to a colleague lands on the same list.
 
-```bash
-npm run dev:server    # http://localhost:5000
-npm run dev:client    # http://localhost:5173
+## Database Design
+
+There are seven collections, plus a counters collection that only hands out patient codes.
+
+| Collection | What it holds |
+| --- | --- |
+| users | the login accounts: name, email, hashed password, role, active flag |
+| refreshtokens | one row per live session, stored as a hash of the token |
+| departments | a name and a code, both unique |
+| doctors | the profile behind a doctor account: department, specialisation, slot length, weekly schedule |
+| patients | the register: sequential code, name, unique mobile, optional gender and birth date |
+| appointments | one row per visit: doctor, patient, date, times, status, snapshots, timestamps |
+| auditlogs | who did what, with a small metadata object and the ip address |
+
+```mermaid
+erDiagram
+  USER ||--o| DOCTOR : "profile for"
+  USER ||--o{ REFRESHTOKEN : "sessions"
+  USER ||--o{ AUDITLOG : "acts in"
+  DEPARTMENT ||--o{ DOCTOR : "employs"
+  DEPARTMENT ||--o{ APPOINTMENT : "booked under"
+  DOCTOR ||--o{ APPOINTMENT : "sees"
+  PATIENT ||--o{ APPOINTMENT : "attends"
 ```
 
-The root `package.json` also has `npm run install:all`, `npm run seed` and `npm test`.
+An appointment keeps ids for the patient, doctor and department, and it also keeps small copies of both names so the list page can render and search without a join. Dates and times are plain strings, never `Date` objects, because a stored instant would move a booking a day when the timezone changes.
 
-If the server prints an environment error and stops, it is usually one of these:
+A sample appointment document:
 
-- `JWT_ACCESS_SECRET` is missing or shorter than 32 characters.
-- `MONGO_URI` points at a database that is not running.
-- Something in your shell has already set `PORT` (some tools set it to `0`). In that case run
-  `env -u PORT npm run dev`, because the shell wins over the `.env` file.
+```js
+{
+  _id: ObjectId("68f1c0a2e4b0d3a1c8f4a222"),
+  patientId: ObjectId("68f1c0a2e4b0d3a1c8f4a111"),
+  doctorId: ObjectId("68f1c0a2e4b0d3a1c8f4a333"),
+  departmentId: ObjectId("68f1c0a2e4b0d3a1c8f4a444"),
+  date: "2026-10-19",
+  startTime: "10:00",
+  endTime: "10:15",
+  status: "arrived",
+  purpose: "Fever",
+  notes: "Two days of fever, no rash",
+  patientSnapshot: {
+    name: "Uche Obi",
+    nameLower: "uche obi",
+    mobile: "08040001111",
+    patientCode: "PT-000004"
+  },
+  doctorSnapshot: { name: "Dr. Ifeanyi Okafor", nameLower: "dr. ifeanyi okafor" },
+  createdBy: ObjectId("68f1c0a2e4b0d3a1c8f4a555"),
+  arrivedAt: ISODate("2026-10-19T09:58:00Z"),
+  completedAt: null,
+  cancelledAt: null,
+  cancelReason: null,
+  createdAt: ISODate("2026-10-15T11:02:00Z")
+}
+```
 
-### Environment variables
+Indexes, and what each one is for:
+
+| Index | Reason |
+| --- | --- |
+| appointments `{ doctorId, date, startTime }`, unique, partial on active statuses | stops a second booking in the same slot |
+| appointments `{ doctorId, date, status }` | the doctor's day view |
+| appointments `{ departmentId, date }` | one department's day |
+| appointments `{ date, startTime }` | the default list order |
+| appointments `{ patientSnapshot.mobile }` | mobile search in the filters |
+| appointments `{ patientSnapshot.nameLower }` | patient name search in the filters |
+| patients `{ nameLower }` | the name search box |
+| doctors `{ departmentId }`, `{ nameLower }` | the doctor list and its search |
+| refreshtokens `{ tokenHash }` unique, `{ userId }` | refresh rotation, and signing a user out everywhere |
+| refreshtokens `{ expiresAt }` with a TTL | expired sessions delete themselves |
+| auditlogs `{ createdAt }`, `{ entity, entityId }` | reading the trail |
+
+The unique index on appointments only covers rows in an active status, so a cancelled visit leaves the index and its slot becomes free again. Two receptionists pressing book at the same moment means two inserts, and the database lets exactly one through. The loser gets error 11000, which the service turns into a 409.
+
+## API Documentation
+
+The base path is `/api/v1`. Every answer uses this shape, and errors set `success` to false with `data` set to null:
+
+```json
+{ "success": true, "message": "Signed in", "data": {}, "meta": {} }
+```
+
+Auth:
+
+| Method | Path | Who | What it does |
+| --- | --- | --- | --- |
+| GET | `/health` | anyone | returns the status and the uptime |
+| POST | `/auth/login` | anyone | exchanges an email and password for an access token, rate limited to 10 tries per 15 minutes |
+| POST | `/auth/refresh` | the refresh cookie | rotates the pair and issues a new access token |
+| POST | `/auth/logout` | the refresh cookie | clears the cookie and deletes the session row |
+| GET | `/auth/me` | anyone signed in | returns the signed in user |
+
+Departments, doctors and staff:
+
+| Method | Path | Who | What it does |
+| --- | --- | --- | --- |
+| GET | `/departments` | any signed in account | the department list |
+| GET | `/doctors?departmentId=&q=` | any signed in account | the doctor list, a doctor only gets their own record |
+| GET | `/doctors/:id` | any signed in account | one doctor, a doctor only for their own id |
+| POST | `/doctors` | super admin | creates the login and the profile |
+| PUT | `/doctors/:id/schedule` | super admin | replaces the slot length and the weekly schedule |
+| POST | `/users/receptionists` | super admin | creates a receptionist login |
+
+Slots:
+
+| Method | Path | Who | What it does |
+| --- | --- | --- | --- |
+| GET | `/slots?doctorId=&date=` | any signed in account | the generated grid for that doctor and date |
+
+Patients:
+
+| Method | Path | Who | What it does |
+| --- | --- | --- | --- |
+| GET | `/patients?q=` | receptionist, super admin | one search box for a code, a mobile or a name |
+| GET | `/patients/:id` | receptionist, super admin, doctor | one patient, a doctor only if they have seen them |
+
+Appointments:
+
+| Method | Path | Who | What it does |
+| --- | --- | --- | --- |
+| POST | `/appointments` | receptionist, super admin | books a slot for a known or a new patient |
+| GET | `/appointments` | any signed in account | the filterable, sortable, paged list |
+| GET | `/appointments/:id` | any signed in account | one appointment, a doctor only for their own |
+| PUT | `/appointments/:id` | receptionist, super admin | changes the purpose and the notes |
+| DELETE | `/appointments/:id` | receptionist, super admin | cancels, with an optional reason |
+| POST | `/appointments/:id/arrive` | receptionist, super admin | scheduled becomes arrived, on the day only |
+| POST | `/appointments/:id/complete` | doctor, super admin | arrived becomes completed |
+
+Dashboard:
+
+| Method | Path | Who | What it does |
+| --- | --- | --- | --- |
+| GET | `/dashboard` | any signed in account | today's counts, and for a doctor the next patient |
+| GET | `/dashboard/trend?days=7` | any signed in account | one zero filled entry per day, ending today |
+| GET | `/dashboard/calendar?month=2026-10` | any signed in account | one count per day of that month |
+
+Example, signing in:
+
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{ "email": "reception@emr.test", "password": "Password123!" }
+```
+
+```json
+{
+  "success": true,
+  "message": "Signed in",
+  "data": {
+    "accessToken": "<jwt, 15 minutes>",
+    "user": { "id": "68f1c0a2e4b0d3a1c8f4a555", "name": "Blessing Udoh", "email": "reception@emr.test", "role": "receptionist" }
+  },
+  "meta": {}
+}
+```
+
+The refresh token is set as an httpOnly cookie on the same call. A wrong email, a wrong password and a deactivated account all answer with 401 and the sentence `Invalid email or password`.
+
+Example, booking a visit:
+
+```http
+POST /api/v1/appointments
+Authorization: Bearer <receptionist access token>
+Content-Type: application/json
+
+{
+  "doctorId": "68f1c0a2e4b0d3a1c8f4a333",
+  "date": "2026-10-19",
+  "startTime": "10:00",
+  "newPatient": { "name": "Uche Obi", "mobile": "08040001111", "gender": "male" },
+  "purpose": "Fever"
+}
+```
+
+```json
+{
+  "success": true,
+  "message": "Appointment booked",
+  "data": {
+    "appointment": {
+      "id": "68f1c0a2e4b0d3a1c8f4a222",
+      "date": "2026-10-19",
+      "startTime": "10:00",
+      "endTime": "10:15",
+      "status": "scheduled",
+      "purpose": "Fever",
+      "notes": null,
+      "departmentId": "68f1c0a2e4b0d3a1c8f4a444",
+      "doctor": { "id": "68f1c0a2e4b0d3a1c8f4a333", "name": "Dr. Ifeanyi Okafor" },
+      "patient": { "id": "68f1c0a2e4b0d3a1c8f4a111", "name": "Uche Obi", "patientCode": "PT-000004", "mobile": "08040001111" }
+    }
+  },
+  "meta": {}
+}
+```
+
+That call answers with 201. Booking a slot someone already holds is a 409. A time the grid does not offer is a 400 naming `startTime`, and moving a visit along a path the workflow does not allow is a 409 that names both ends.
+
+## Environment Variables
 
 `server/.env`
 
-| Variable | Needed | Default | What it is |
+| Name | Required | Example | Note |
 | --- | --- | --- | --- |
-| `MONGO_URI` | yes | none | the database address |
-| `JWT_ACCESS_SECRET` | yes | none | at least 32 characters, signs the login token |
-| `PORT` | no | `5000` | api and sockets share it |
-| `NODE_ENV` | no | `development` | `development`, `test` or `production` |
-| `ACCESS_TOKEN_TTL` | no | `15m` | how long a login token lasts |
-| `REFRESH_TOKEN_TTL_DAYS` | no | `7` | how long a session lasts |
-| `CLIENT_ORIGIN` | no | `http://localhost:5173` | the one site allowed to call the api |
-| `CLINIC_TIMEZONE` | no | `Africa/Lagos` | the clock every "today" check uses |
+| `MONGO_URI` | yes | `mongodb://127.0.0.1:27017/emr` | the database address |
+| `JWT_ACCESS_SECRET` | yes | a 32 character random string | the server refuses to start without one of 32 characters or more |
+| `NODE_ENV` | no | `development` | one of development, test or production |
+| `PORT` | no | `5000` | the api and Socket.IO share it |
+| `ACCESS_TOKEN_TTL` | no | `15m` | anything jsonwebtoken accepts |
+| `REFRESH_TOKEN_TTL_DAYS` | no | `7` | the cookie and the stored row use the same value |
+| `CLIENT_ORIGIN` | no | `http://localhost:5173` | the one origin CORS allows |
+| `CLINIC_TIMEZONE` | no | `Africa/Lagos` | any valid IANA zone, and the clock every today check uses |
 
 `client/.env`
 
-| Variable | Needed | Default | What it is |
+| Name | Required | Example | Note |
 | --- | --- | --- | --- |
-| `VITE_API_TARGET` | no | `http://localhost:5000` | where the dev server sends api calls |
+| `VITE_API_TARGET` | no | `http://localhost:5000` | where the dev proxy sends api calls |
 
-## Demo data
+## Installation Instructions
 
-```bash
-npm run seed
+1. Install Node 20 or newer and have MongoDB running, either a local `mongod` or a cluster you can reach.
+2. Clone the repository and enter it: `git clone <repository-url> && cd <repository>`.
+3. Set up the server: `cd server`, copy `.env.example` to `.env`, then set `JWT_ACCESS_SECRET` to a long random string. Run `npm install`.
+4. Set up the client in a second terminal: `cd client`, copy `.env.example` to `.env` if the api is not on the default port, then run `npm install`.
+
+From the root, `npm run install:all` installs both sides in one go. The server creates its own indexes when it boots, so there is no migration step.
+
+## Running the Project
+
+Two terminals, both from the repository root:
+
+```
+npm run dev:server     http://localhost:5000, health check at /api/v1/health
+npm run dev:client     http://localhost:5173, proxies /api and /socket.io to the server
 ```
 
-This empties the collections it owns and writes a fresh clinic: six departments, ten accounts, seven
-doctors with their own hours, and a few weeks of visits around today. It refuses to run when
-`NODE_ENV=production` unless you pass `--force`.
+`cd server && npm run dev` is the same thing, because the root scripts only wrap `npm --prefix`.
+
+A bad environment stops the server at boot with the exact problem printed, for example `JWT_ACCESS_SECRET: JWT_ACCESS_SECRET must be at least 32 characters`. One thing to watch: the shell wins over `.env`, so a `PORT` already exported by some other tool overrides yours. Run `env -u PORT npm run dev` if that happens.
+
+Seed the demo clinic with `npm run seed`. It empties the collections it owns, so never point it at real data, and it refuses to run under `NODE_ENV=production` unless you pass `--force`. The demo dates are built from the clinic's today, so the visits are always around now.
 
 | Role | Email | Password |
 | --- | --- | --- |
@@ -113,85 +309,41 @@ doctors with their own hours, and a few weeks of visits around today. It refuses
 | doctor | dr.etim@emr.test | Password123! |
 | doctor | dr.williams@emr.test | Password123! |
 
-The sign in page has a button for each of these, so you can try a role without typing.
+The sign in page has a button per role that fills the form, so you can try each one without typing.
 
-## The api in one minute
+Run the tests with `npm test`. They use a temporary database, so nothing of yours is touched. The first run downloads that binary once and takes a few minutes, later runs take about a minute.
 
-Every endpoint starts with `/api/v1`. Every answer has the same shape: `{ success, message, data, meta }`.
-Errors use `success: false`, and `meta.code` tells the client what went wrong.
+The eight suites are utils, health, errorHandler, models, slotGenerator, concurrency, dashboard and realtime, and a green run prints `Test Suites: 8 passed, 8 total` and `Tests: 57 passed, 57 total`.
 
-| Method | Path | Who | What it does |
-| --- | --- | --- | --- |
-| GET | `/health` | anyone | is the server awake |
-| POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | anyone / signed in | sign in, keep the session, sign out |
-| GET | `/doctors`, `/doctors/:id` | signed in | the doctor list, or one doctor |
-| POST | `/doctors` | super admin | add a doctor and their login |
-| PUT | `/doctors/:id/schedule` | super admin | replace a doctor's weekly hours |
-| GET | `/slots?doctorId=&date=` | signed in | the free and taken times for one day |
-| GET | `/patients?q=` | desk and doctors | find a patient |
-| POST | `/appointments` | desk | book a visit |
-| GET | `/appointments`, `/appointments/:id` | signed in | the list, or one visit |
-| PUT | `/appointments/:id` | desk | change the purpose or notes |
-| DELETE | `/appointments/:id` | desk | cancel a visit |
-| POST | `/appointments/:id/arrive`, `/complete` | desk / doctor | move the visit on |
-| GET | `/dashboard`, `/dashboard/trend`, `/dashboard/calendar` | signed in | the numbers behind the board |
+Real-time updates use rooms. A receptionist or super admin joins the `staff` room on connect, a doctor joins their own `doctor-self` room, and a scheduler screen also joins `doctor:{doctorId}:{date}` for the day it is showing. The server sends `appointment:created`, `appointment:updated` and `appointment:cancelled` after the write has committed, each carrying only the id, doctor, date, start time and status. The client then refetches the rows it already knows how to render, so no patient data travels over the socket.
 
-[api.http](api.http) has a runnable request for every route, including the ones that should fail.
+The Docker files, `docker-compose.yml`, `server/Dockerfile` and `client/Dockerfile`, are written but have never been run on a machine with Docker.
 
-Two rules are worth knowing:
+## Assumptions Made
 
-- A slot can only be booked once. If someone was faster, the second request gets a `409`.
-- Only the doctor on the visit, or a super admin, can complete it. The desk can mark someone as arrived.
+- One mobile number per patient. Registering a number that already exists answers with 409 and offers the existing record instead of merging.
+- The clinic has one timezone, `CLINIC_TIMEZONE`, and every check of what is today uses it.
+- Cancelling frees the slot straight away. The cancelled row stays as the record.
+- Only the doctor on the visit, or a super admin, can complete it. The desk marks people as arrived.
+- A doctor only ever sees their own appointments, whatever the query string asks for.
+- Arriving is allowed on the day of the visit, not before.
+- Times are wall clock strings in the clinic's timezone. Nothing converts them.
 
-## Live updates
+## Known Limitations
 
-The api and the live connection share one port. When a visit is booked, updated or cancelled, the server
-tells the screens that care, and those screens simply ask for the list again. A booking made at the front
-desk therefore shows up on the doctor's board without anyone reloading the page.
+- The Docker stack was never run, so it is written but unverified.
+- There is no end to end browser test. The client was checked by hand, and the server has the jest suites.
+- The list uses offset paging, which gets slow on very deep pages.
+- Refresh tokens rotate, but a replayed token does not revoke the other sessions of that user.
+- There is no password reset and no self sign up. A super admin creates every account.
+- There are no consultation notes, prescriptions, billing or patient documents.
+- The socket layer is a single process, so a second api instance needs the Redis adapter.
 
-## Tests
+## Future Improvements
 
-```bash
-npm test
-```
-
-The tests run against a temporary MongoDB, so they never touch your own data. The first run downloads
-that database once, which takes a few minutes.
-
-The 57 tests cover the health check, the error handling, the models and their indexes, the slot
-generator, the dashboard, the socket handshake and events, and a burst of twenty people trying to book
-the same slot at the same moment. That last one is the important one: exactly one booking wins, the
-other nineteen are told the slot is taken, and the database is left with one appointment.
-
-## Docker
-
-```bash
-echo "JWT_ACCESS_SECRET=$(openssl rand -hex 32)" > .env
-docker compose up --build
-```
-
-The api is on http://localhost:5000 and the site on http://localhost:8080, with nginx passing `/api` and
-`/socket.io` through to the api. Seed it with `docker compose exec server npm run seed`.
-
-This setup has not been run, because the machine it was written on has no Docker. The two `npm run dev`
-terminals above are the path that was actually used.
-
-## Choices and limits
-
-- **Times are strings.** A visit stores `2026-10-19` and `09:00` instead of a date object, so a booking
-  cannot slip a day when someone converts a timezone.
-- **Slots are not saved.** They are worked out from the doctor's hours each time they are asked for, then
-  marked booked using that day's visits.
-- **One mobile number, one patient.** Signing up a number that already exists offers you that patient
-  instead of creating a second one.
-- **Cancelling keeps the row.** The visit stays in the database as a record, and the slot becomes free.
-- **Search looks at the beginning of a name**, so a bare surname does not find "Dr. Ifeanyi Okafor".
-- **Not built:** prescriptions, billing, patient files, password reset, e-mail, TypeScript and a browser
-  test suite. The client was checked by hand.
-- **One server process.** Running a second api instance would need the Redis adapter for live updates.
-
-[ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) explains why a few of these choices were made.
-
-## License
-
-Not licensed for redistribution. Built as a practice project.
+- Cursor paging for the appointment list, and a Redis cache for slot reads.
+- Reuse detection for refresh tokens, signing out every session of that user.
+- Working exceptions per doctor: holidays, half days and one off closures.
+- A waiting list for a fully booked doctor, with a button that jumps to the first free slot.
+- Reminders by email or SMS before a visit.
+- A printable day sheet for the desk, and a CSV export of the filtered list.
