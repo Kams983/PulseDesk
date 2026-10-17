@@ -1,6 +1,11 @@
 import axios from 'axios';
 
-const BASE_URL = '/api/v1';
+// Empty in development, so every call stays a relative path and the Vite proxy forwards it, which keeps
+// the api and the refresh cookie on one origin. The production build sets VITE_API_URL to the deployed
+// api, and the cookie still follows because credentials are on for every request below.
+export const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
+const BASE_URL = `${API_URL}/api/v1`;
 
 // The access token lives in memory only, never in localStorage: script on the page (or an XSS payload)
 // cannot read a value that was never persisted, and a reload restores the session from the httpOnly
