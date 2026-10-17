@@ -1,0 +1,75 @@
+# Builds the client and publishes it to GitHub Pages on every push to main.
+name: Deploy client to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The deployment needs the token to write a Pages result and mint its own deployment token; the code
+# itself is only read.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. A queued run that a newer push has made pointless is cancelled, so the last
+# commit on main is what ends up published.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      # A build with no api url would publish a client that calls Pages itself, so it fails here with a
+      # sentence instead of shipping a broken site.
+      - name: Check the api url variable is set
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: |
+          if [ -z "$VITE_API_URL" ]; then
+            echo "::error::Set the repository variable VITE_API_URL, under Settings, Secrets and variables, Actions, Variables."
+            exit 1
+          fi
+
+      - name: Install the client
+        working-directory: client
+        run: npm ci
+
+      # The build also copies dist/index.html to dist/404.html, so a deep link survives a refresh.
+      - name: Build the client
+        working-directory: client
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the client
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: client/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
