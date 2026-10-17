@@ -14,12 +14,15 @@ export function useSocket() {
   const { user } = useAuth();
   const [socket, setSocket] = useState(null);
   const [status, setStatus] = useState('idle');
+  // how many times socket.io has already tried to come back, so a slow recovery can say so
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!user) {
       // signing out has to take the live board with it, otherwise a closed session keeps receiving events
       setSocket(null);
       setStatus('idle');
+      setAttempt(0);
 
       return undefined;
     }
@@ -31,20 +34,33 @@ export function useSocket() {
       auth: (callback) => callback({ token: getAccessToken() }),
     });
 
-    next.on('connect', () => setStatus('live'));
-    next.on('disconnect', () => setStatus('offline'));
+    // A dropped transport is not a dead board: socket.io is already retrying on its own backoff, so the
+    // state says reconnecting and the count makes the wait visible instead of silent.
+    function onReconnectAttempt(count) {
+      setAttempt(count);
+      setStatus('reconnecting');
+    }
+
+    next.on('connect', () => {
+      setStatus('live');
+      setAttempt(0);
+    });
+    next.on('disconnect', () => setStatus('reconnecting'));
     // a refused handshake (expired token, deactivated account) is an offline board, not a broken page
     next.on('connect_error', () => setStatus('offline'));
+    next.io.on('reconnect_attempt', onReconnectAttempt);
 
     setSocket(next);
 
     return () => {
+      next.io.off('reconnect_attempt', onReconnectAttempt);
       next.removeAllListeners();
       next.disconnect();
       setSocket(null);
       setStatus('idle');
+      setAttempt(0);
     };
   }, [user]);
 
-  return { socket, status };
+  return { socket, status, attempt };
 }

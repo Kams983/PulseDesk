@@ -7,8 +7,8 @@ const SocketContext = createContext(null);
 // A page that wants live updates asks for the socket here instead of opening its own, so two pages that
 // both need events still cost one connection.
 export function SocketProvider({ children }) {
-  const { socket, status } = useSocket();
-  const value = useMemo(() => ({ socket, status }), [socket, status]);
+  const { socket, status, attempt } = useSocket();
+  const value = useMemo(() => ({ socket, status, attempt }), [socket, status, attempt]);
 
   return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;
 }

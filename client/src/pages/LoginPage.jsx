@@ -6,7 +6,6 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { HeartPulse, TriangleAlert } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
-import Spinner from '@/components/ui/Spinner';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
@@ -29,7 +28,7 @@ const schema = z.object({
 export default function LoginPage() {
   useDocumentTitle('Sign in');
 
-  const { user, isLoading, login } = useAuth();
+  const { user, login } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -41,15 +40,7 @@ export default function LoginPage() {
     formState: { errors, isSubmitting },
   } = useForm({ resolver: zodResolver(schema), defaultValues: { email: '', password: '' } });
 
-  // the session restore decides whether this page or the dashboard is the right answer
-  if (isLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-page">
-        <Spinner label="Checking your session" />
-      </div>
-    );
-  }
-
+  // the startup screen settled the session before this page was ever mounted
   if (user) {
     return <Navigate to={location.state?.from || '/'} replace />;
   }
@@ -79,7 +70,12 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         <div className="rounded-panel bg-card p-6 shadow-pop sm:p-8">
           <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-control bg-primary text-white">
+            {/* while the sign in request runs, the mark keeps the beat of the loader in the button */}
+            <span
+              className={`flex h-11 w-11 items-center justify-center rounded-control bg-primary text-white ${
+                isSubmitting ? 'astra-origin animate-astra-breathe' : ''
+              }`}
+            >
               <HeartPulse size={22} aria-hidden="true" />
             </span>
             <div>

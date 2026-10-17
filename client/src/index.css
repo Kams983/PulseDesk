@@ -17,3 +17,25 @@
     @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-page;
   }
 }
+
+@layer utilities {
+  /* every ring in the loader turns around the middle of its viewBox, so one class states that once */
+  .astra-origin {
+    transform-box: view-box;
+    transform-origin: center;
+  }
+
+  /* the frozen frame has to still look deliberate: a lit arc, a full trace and a quiet core */
+  .astra-still .astra-comet {
+    display: none;
+  }
+}
+
+/* Movement is the point of this loader, and it loops forever, so a person who asked their system for
+   less motion gets the shapes without the movement instead of the whole thing being hidden. */
+@media (prefers-reduced-motion: reduce) {
+  [class*='animate-astra'] {
+    animation: none !important;
+  }
+}
+

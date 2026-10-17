@@ -28,7 +28,7 @@ export default function SchedulerPage() {
   useDocumentTitle('Scheduler');
 
   const { user } = useAuth();
-  const { socket, status: liveStatus } = useRealtime();
+  const { socket, status: liveStatus, attempt } = useRealtime();
   const queryClient = useQueryClient();
   const canBook = canBookAppointments(user.role);
 
@@ -176,7 +176,7 @@ export default function SchedulerPage() {
         action={
           <div className="flex items-center gap-2">
             {isRefreshing ? <span className="text-xs text-ink-muted">Updating…</span> : null}
-            <LiveIndicator status={liveStatus} />
+            <LiveIndicator status={liveStatus} attempt={attempt} />
             <Button size="sm" variant="ghost" onClick={refresh} aria-label="Refresh the board">
               <RefreshCw size={15} aria-hidden="true" />
             </Button>

@@ -1,23 +1,33 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import * as authApi from '@/api/authApi';
-import { refreshAccessToken, setAccessToken, setAuthHandlers } from '@/api/axiosClient';
+import { setAccessToken, setAuthHandlers } from '@/api/axiosClient';
 
 const AuthContext = createContext(null);
 
+// Signing out is one request, but the curtain that covers it is a moment of its own: without a floor a
+// local api answers in 40ms and the user sees a flash of overlay instead of a transition.
+const SIGN_OUT_FLOOR_MS = 800;
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  // true until the one restore attempt has finished, so a protected route never flashes the login page
+  // true until the startup screen has restored a session (or decided there is none), so no route flashes
+  // the login page while that is still being worked out
   const [isLoading, setIsLoading] = useState(true);
+  const [isSigningOut, setIsSigningOut] = useState(false);
 
-  useEffect(() => {
-    // The access token is memory only, so a reload starts without one. The refresh cookie is still in
-    // the browser, and this single call is what turns it back into a session.
-    refreshAccessToken()
-      .then((session) => setUser(session.user))
-      .catch(() => {
-        // no cookie, or an expired one: staying signed out is the correct outcome, not an error to show
-      })
-      .finally(() => setIsLoading(false));
+  // The startup screen makes the one refresh call a reload needs, and hands the answer here, because the
+  // screen that draws the wait is the screen that should own it. Two callers would mean two refreshes and
+  // a race between them.
+  const hydrate = useCallback((session) => {
+    setAccessToken(session?.accessToken || null);
+    setUser(session?.user || null);
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
@@ -43,11 +53,30 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await authApi.logout();
-    setUser(null);
+    setIsSigningOut(true);
+    const startedAt = Date.now();
+
+    try {
+      // the cookie is what makes the session real, so the user is only signed out once the server has
+      // cleared it. A failed call leaves them where they were rather than on a login page that a
+      // reload would contradict.
+      await authApi.logout();
+      setUser(null);
+    } finally {
+      const remaining = SIGN_OUT_FLOOR_MS - (Date.now() - startedAt);
+
+      if (remaining > 0) {
+        await wait(remaining);
+      }
+
+      setIsSigningOut(false);
+    }
   }, []);
 
-  const value = useMemo(() => ({ user, login, logout, isLoading }), [user, login, logout, isLoading]);
+  const value = useMemo(
+    () => ({ user, login, logout, isLoading, isSigningOut, hydrate }),
+    [user, login, logout, isLoading, isSigningOut, hydrate]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

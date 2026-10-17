@@ -1,0 +1,239 @@
+/* PulseDesk startup loader.
+ *
+ * Everything visual lives in custom properties on the root element, so the loader reads the app's palette
+ * when one exists and falls back to the product colours when it does not. The fallbacks are the app's own
+ * hex values (page #EEF0FB, ink #1F2150, muted #5F6382) plus the four tones this screen owns: the wordmark
+ * lilac, the timer grey, the bar track and the centre of the background.
+ *
+ * Layout is one centred column with fixed spacing between the blocks. Nothing here is a card: the screen
+ * is the loader.
+ */
+
+.pulse-loader {
+  --pl-page: var(--color-page, #eef0fb);
+  --pl-page-centre: var(--color-page-centre, #fbfbff);
+  --pl-ink: var(--color-ink, #1f2150);
+  --pl-muted: var(--color-ink-muted, #5f6382);
+  --pl-wordmark: var(--color-wordmark, #8e92d8);
+  --pl-timer: var(--color-timer, #7a7fa8);
+  --pl-track: var(--color-line, #e4e6f4);
+  --pl-accent: #4f52b2;
+  --pl-font: var(--font-sans, 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif);
+  --pl-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --pl-line: 1.5px;
+  --pl-roll-gap: 4px;
+
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 24px;
+  background: radial-gradient(circle at 50% 46%, var(--pl-page-centre) 0%, var(--pl-page) 68%);
+  font-family: var(--pl-font);
+  color: var(--pl-ink);
+  text-align: center;
+  -webkit-font-smoothing: antialiased;
+}
+
+.pulse-loader__stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 34rem;
+}
+
+/* The mark: the icon and the soft light behind it */
+.pulse-loader__mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+/* Centred by hand: an absolutely positioned child of a grid container is otherwise placed at its static
+   position, which is the last grid area rather than the middle of the icon. */
+.pulse-loader__glow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 220px;
+  height: 220px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--pl-accent) 9%, transparent) 0%, transparent 68%);
+  pointer-events: none;
+}
+
+.pulse-loader__icon {
+  position: relative;
+  display: block;
+  width: min(160px, 50vw);
+  height: auto;
+  overflow: visible;
+}
+
+.pulse-loader__path {
+  fill: none;
+  stroke: var(--pl-accent);
+  stroke-width: var(--pl-line);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* the travelling highlight: a short lit dash that follows the pulse motif */
+.pulse-loader__highlight {
+  fill: none;
+  stroke: var(--pl-accent);
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.85;
+}
+
+.pulse-loader__wordmark {
+  margin-top: 40px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  /* the tracking pushes the last letter off centre; the indent puts the word back */
+  text-indent: 0.3em;
+  color: var(--pl-wordmark);
+}
+
+/* The title is a masked column: each stage title is a line, and rolling means translating the column.
+   The mask sets the size so that its own height and the line height are the same measurement, which is
+   the distance the column travels per stage. */
+.pulse-loader__title-mask {
+  position: relative;
+  margin-top: 16px;
+  overflow: hidden;
+  font-size: clamp(18px, 4.4vw, 22px);
+  height: calc(1.25em + var(--pl-roll-gap));
+}
+
+.pulse-loader__title-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pl-roll-gap);
+  will-change: transform;
+}
+
+.pulse-loader__title-line {
+  flex: none;
+  font-size: inherit;
+  font-weight: 600;
+  line-height: 1.25em;
+  white-space: nowrap;
+  color: var(--pl-ink);
+}
+
+.pulse-loader__subtitle {
+  margin-top: 6px;
+  font-size: clamp(14px, 3.4vw, 16px);
+  line-height: 1.4;
+  color: var(--pl-muted);
+  will-change: opacity;
+}
+
+/* The bar states the stage, never progress: the wait has no percentage */
+.pulse-loader__bar {
+  position: relative;
+  margin-top: 28px;
+  width: 120px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--pl-track);
+  overflow: hidden;
+  will-change: transform;
+}
+
+.pulse-loader__bar-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  border-radius: inherit;
+}
+
+.pulse-loader__bar-fill--old {
+  background: var(--pl-accent);
+  transform-origin: center;
+}
+
+.pulse-loader__bar-fill--new {
+  background: var(--pl-accent);
+  transform: scaleX(0);
+}
+
+.pulse-loader__timer {
+  margin-top: 12px;
+  min-width: 4ch;
+  font-family: var(--pl-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  color: var(--pl-timer);
+}
+
+.pulse-loader__retry {
+  margin-top: 18px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pl-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--pl-accent) 35%, transparent);
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.pulse-loader__retry:hover {
+  color: color-mix(in srgb, var(--pl-accent) 80%, var(--pl-ink));
+}
+
+.pulse-loader__retry:focus-visible {
+  outline: 2px solid var(--pl-accent);
+  outline-offset: 2px;
+}
+
+/* The exit wipe: same colour as the page the app is about to paint, growing from the centre out */
+.pulse-loader__circle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--pl-page);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pulse-loader__announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-loader__title-column,
+  .pulse-loader__bar,
+  .pulse-loader__bar-fill,
+  .pulse-loader__glow {
+    will-change: auto;
+  }
+}

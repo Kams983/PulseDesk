@@ -1,4 +1,5 @@
 import { Outlet } from 'react-router-dom';
+import ConnectionNotice from './ConnectionNotice';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 
@@ -18,6 +19,9 @@ export default function AppLayout() {
           </main>
         </div>
       </div>
+
+      {/* inside the shell on purpose: it only means something once there is a session to keep live */}
+      <ConnectionNotice />
     </div>
   );
 }
