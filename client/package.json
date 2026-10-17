@@ -6,7 +6,7 @@
   "description": "PulseDesk appointment management ui",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/copy-404.js",
     "preview": "vite preview"
   },
   "dependencies": {
